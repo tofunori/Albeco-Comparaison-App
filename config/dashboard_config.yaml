@@ -1,0 +1,65 @@
+# Dashboard Configuration
+app:
+  title: "Interactive Albedo Analysis Dashboard"
+  host: "127.0.0.1"
+  port: 8050
+  debug: true
+
+# Data paths
+data:
+  base_path: "data"
+  modis_path: "data/modis"
+  aws_path: "data/aws"
+  glacier_masks_path: "data/glacier_masks"
+
+# Analysis settings
+analysis:
+  albedo:
+    modis_products:
+      - MOD09GA
+      - MOD10A1
+      - MCD43A3
+    quality_filters:
+      cloud_threshold: 0.2
+      snow_threshold: 0.1
+      outlier_threshold: 2.5
+  statistics:
+    metrics:
+      - rmse
+      - bias
+      - correlation
+      - mae
+    confidence_level: 0.95
+
+# Visualization settings
+visualization:
+  map:
+    default_zoom: 10
+    tile_layer: "OpenStreetMap"
+    marker_size: 8
+    selected_marker_size: 12
+  plots:
+    figure_size: [12, 8]
+    dpi: 100
+    color_scheme:
+      MOD09GA: "#1f77b4"
+      MOD10A1: "#ff7f0e" 
+      MCD43A3: "#2ca02c"
+      AWS: "#d62728"
+    plot_types:
+      - scatter
+      - time_series
+      - box_plot
+      - histogram
+      - statistical_summary
+
+# Performance settings
+performance:
+  cache_timeout: 300  # 5 minutes
+  max_data_points: 10000
+  chunk_size: 1000
+
+# Export settings
+export:
+  formats: ["csv", "png", "html"]
+  default_dpi: 300

@@ -1,0 +1,77 @@
+# Glacier site configurations
+# Each glacier should have its own configuration section
+
+glaciers:
+  athabasca:
+    name: "Athabasca Glacier"
+    region: "Canadian Rockies"
+    coordinates:
+      lat: 52.2
+      lon: -117.25
+    data_files:
+      modis:
+        # Using the multi-product file for all methods (will be processed by custom loader)
+        MOD09GA: "Athabasca_Terra_Aqua_MultiProduct_2014-01-01_to_2021-01-01.csv"
+        MOD10A1: "Athabasca_Terra_Aqua_MultiProduct_2014-01-01_to_2021-01-01.csv"
+        MCD43A3: "Athabasca_Terra_Aqua_MultiProduct_2014-01-01_to_2021-01-01.csv"
+      aws: "iceAWS_Atha_albedo_daily_20152020_filled_clean.csv"
+      mask: "data/glacier_masks/athabasca/masque_athabasa_zone_ablation.shp"
+      aws_points: "data/glacier_masks/athabasca/Point_Custom.shp"
+    aws_stations:
+      iceAWS_Atha:
+        name: "Athabasca Glacier AWS"
+        lat: 50.7124
+        lon: -115.3018
+        elevation: 2200
+    # Athabasca-specific settings
+    data_type: "athabasca_multiproduct"  # Flag for custom processing
+    outlier_threshold: 2.5
+    
+  haig:
+    name: "Haig Glacier" 
+    region: "Canadian Rockies"
+    coordinates:
+      lat: 50.73
+      lon: -116.17
+    data_files:
+      modis:
+        # Using the multi-product file for all methods (will be processed by custom loader)
+        MOD09GA: "Haig_MODIS_Pixel_Analysis_MultiProduct_2002_to_2016_fraction.csv"
+        MOD10A1: "Haig_MODIS_Pixel_Analysis_MultiProduct_2002_to_2016_fraction.csv"
+        MCD43A3: "Haig_MODIS_Pixel_Analysis_MultiProduct_2002_to_2016_fraction.csv"
+      aws: "HaigAWS_daily_2002_2015_gapfilled.csv"
+      mask: "data/glacier_masks/haig/Haig_glacier_final.shp"
+    aws_stations:
+      haig_station:
+        name: "Haig Glacier AWS"
+        lat: 50.7124
+        lon: -115.3018
+        elevation: 2800
+    # Haig-specific settings (enhanced plotting like Athabasca)
+    data_type: "athabasca_multiproduct"  # Flag for custom processing
+    outlier_threshold: 2.5
+        
+  coropuna:
+    name: "Coropuna Glacier"
+    region: "Peruvian Andes"
+    coordinates:
+      lat: -15.54
+      lon: -72.66
+    data_files:
+      modis:
+        # Using the multi-product file for all methods (will be processed by custom loader)
+        MOD09GA: "coropuna_glacier_2014-01-01_to_2025-01-01.csv"
+        MOD10A1: "coropuna_glacier_2014-01-01_to_2025-01-01.csv"
+        MCD43A3: "coropuna_glacier_2014-01-01_to_2025-01-01.csv"
+      aws: "COROPUNA_simple.csv"
+      mask: "data/glacier_masks/coropuna/coropuna_glacier_mask.tif"
+    aws_stations:
+      coropuna_station:
+        name: "Coropuna Glacier AWS"
+        lat: -15.5361
+        lon: -72.5997
+        elevation: 5400
+    # Coropuna-specific settings (enhanced plotting like Athabasca)
+    data_type: "athabasca_multiproduct"  # Flag for enhanced processing
+    outlier_threshold: 2.5
+        
