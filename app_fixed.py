@@ -157,7 +157,7 @@ def create_layout():
                             dcc.Dropdown(
                                 id='glacier-dropdown',
                                 options=glacier_options,
-                                value=None,
+                                value="athabasca",  # Default to Athabasca Glacier
                                 placeholder="Select a glacier",
                                 clearable=False
                             ),
@@ -276,13 +276,70 @@ def create_layout():
 # Set app layout
 app.layout = create_layout()
 
-# Callback for loading data
+# Auto-load Athabasca data on startup
 @app.callback(
     [Output('glacier-data-store', 'data'),
      Output('pixel-data-store', 'data'),
      Output('current-glacier-store', 'data'),
      Output('data-summary', 'children'),
-     Output('load-status', 'children')],
+     Output('load-status', 'children'),
+     Output('tabs', 'active_tab')],  # Also set active tab to map
+    Input('glacier-dropdown', 'value'),
+    prevent_initial_call=False  # Allow initial call to auto-load
+)
+def auto_load_default_data(glacier_id):
+    """Auto-load data when glacier dropdown has a default value."""
+    if not glacier_id:
+        return None, None, None, "No data loaded", "", "map-tab"
+    
+    try:
+        logger.info(f"Auto-loading data for {glacier_id}")
+        
+        # Load data with our data manager
+        data = data_manager.load_glacier_data(glacier_id)
+        pixel_data = data_manager.get_pixel_locations(glacier_id)
+        
+        if data is not None and not data.empty:
+            # Create summary
+            total_records = len(data)
+            methods = list(data['method'].unique()) if 'method' in data.columns else []
+            date_range = ""
+            if 'date' in data.columns:
+                date_range = f"{data['date'].min()} to {data['date'].max()}"
+            
+            pixel_count = data['pixel_id'].nunique() if 'pixel_id' in data.columns else 'N/A'
+            
+            summary = [
+                html.P(f"📊 Total Records: {total_records:,}", className="mb-1"),
+                html.P(f"🛰️ Methods: {', '.join(methods)}", className="mb-1"),
+                html.P(f"📅 Date Range: {date_range}", className="mb-1"),
+                html.P(f"🗺️ Pixels: {pixel_count}", className="mb-1")
+            ]
+            
+            # Store data as JSON
+            data_json = data.to_json(date_format='iso')
+            pixel_json = pixel_data.to_json(date_format='iso') if pixel_data is not None else None
+            
+            status = dbc.Alert("✅ Data loaded automatically!", color="success", className="mt-2")
+            
+            return data_json, pixel_json, glacier_id, summary, status, "map-tab"
+            
+        else:
+            return None, None, None, [html.P("❌ No data available", className="text-danger")], dbc.Alert("❌ No data found", color="warning"), "map-tab"
+            
+    except Exception as e:
+        logger.error(f"Error auto-loading data for {glacier_id}: {e}")
+        error_msg = [html.P(f"❌ Error: {str(e)}", className="text-danger")]
+        status = dbc.Alert(f"❌ Error: {str(e)}", color="danger")
+        return None, None, None, error_msg, status, "map-tab"
+
+# Callback for loading data
+@app.callback(
+    [Output('glacier-data-store', 'data', allow_duplicate=True),
+     Output('pixel-data-store', 'data', allow_duplicate=True),
+     Output('current-glacier-store', 'data', allow_duplicate=True),
+     Output('data-summary', 'children', allow_duplicate=True),
+     Output('load-status', 'children', allow_duplicate=True)],
     Input('load-data-btn', 'n_clicks'),
     State('glacier-dropdown', 'value'),
     prevent_initial_call=True

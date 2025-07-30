@@ -93,6 +93,11 @@ class PlotComponents:
             
             # Use Plotly Express for better color handling
             if 'method' in plot_data.columns:
+                # Include date in hover data if available
+                hover_data_fields = ['method']
+                if 'date' in plot_data.columns:
+                    hover_data_fields.append('date')
+                
                 fig = px.scatter(
                     plot_data, 
                     x='aws_albedo', 
@@ -103,9 +108,10 @@ class PlotComponents:
                     labels={
                         'aws_albedo': 'AWS Albedo',
                         'albedo': 'MODIS Albedo',
-                        'method': 'Method'
+                        'method': 'Method',
+                        'date': 'Date'
                     },
-                    hover_data=['method']
+                    hover_data=hover_data_fields
                 )
                 
                 # Update marker size and opacity
@@ -220,39 +226,49 @@ class PlotComponents:
             if 'date' not in data.columns:
                 return self._create_empty_plot("Date column not found for time series")
             
-            # Convert date column
+            # Convert date column and ensure method is string
             plot_data = data.copy()
             plot_data['date'] = pd.to_datetime(plot_data['date'])
+            
+            if 'method' in plot_data.columns:
+                plot_data['method'] = plot_data['method'].astype(str)
             
             # Filter methods if specified
             if methods and 'method' in plot_data.columns:
                 plot_data = plot_data[plot_data['method'].isin(methods)]
             
-            fig = go.Figure()
-            
-            # Plot MODIS methods
-            if 'method' in plot_data.columns:
-                methods_in_data = plot_data['method'].unique()
-                for method in methods_in_data:
-                    method_data = plot_data[plot_data['method'] == method]
+            # Create base figure using Plotly Express for MODIS data
+            if 'method' in plot_data.columns and 'albedo' in plot_data.columns:
+                # Remove NaN values for cleaner plot
+                modis_data = plot_data.dropna(subset=['albedo'])
+                
+                if not modis_data.empty:
+                    fig = px.line(
+                        modis_data,
+                        x='date',
+                        y='albedo',
+                        color='method',
+                        color_discrete_map=self.colors,
+                        title=title,
+                        labels={
+                            'date': 'Date',
+                            'albedo': 'Albedo',
+                            'method': 'Method'
+                        },
+                        markers=True
+                    )
                     
-                    if not method_data.empty and 'albedo' in method_data.columns:
-                        fig.add_trace(go.Scatter(
-                            x=method_data['date'],
-                            y=method_data['albedo'],
-                            mode='markers+lines',
-                            name=method,
-                            marker=dict(
-                                color=self.colors.get(method, '#1f77b4'),
-                                size=4
-                            ),
-                            line=dict(
-                                color=self.colors.get(method, '#1f77b4'),
-                                width=1
-                            )
-                        ))
+                    # Update marker and line properties
+                    fig.update_traces(
+                        marker=dict(size=4),
+                        line=dict(width=1)
+                    )
+                else:
+                    fig = go.Figure()
+            else:
+                fig = go.Figure()
             
-            # Plot AWS data if available
+            # Add AWS data if available
             if 'aws_albedo' in plot_data.columns:
                 aws_data = plot_data.dropna(subset=['aws_albedo'])
                 if not aws_data.empty:
@@ -262,20 +278,17 @@ class PlotComponents:
                         mode='markers+lines',
                         name='AWS',
                         marker=dict(
-                            color=self.colors.get('AWS', '#d62728'),
+                            color=self.colors.get('AWS', '#8c564b'),
                             size=4
                         ),
                         line=dict(
-                            color=self.colors.get('AWS', '#d62728'),
+                            color=self.colors.get('AWS', '#8c564b'),
                             width=2
                         )
                     ))
             
             # Update layout
             fig.update_layout(
-                title=title,
-                xaxis_title='Date',
-                yaxis_title='Albedo',
                 width=self.figure_size[0] * 80,
                 height=self.figure_size[1] * 60,
                 showlegend=True,
@@ -309,27 +322,37 @@ class PlotComponents:
             if 'method' not in data.columns or 'albedo' not in data.columns:
                 return self._create_empty_plot("Required columns not found for box plot")
             
+            # Prepare data with method as string for categorical handling
+            plot_data = data.copy()
+            plot_data['method'] = plot_data['method'].astype(str)
+            
             # Filter methods if specified
             if methods:
-                plot_data = data[data['method'].isin(methods)]
-            else:
-                plot_data = data
+                plot_data = plot_data[plot_data['method'].isin(methods)]
             
-            fig = go.Figure()
+            # Remove NaN values for cleaner plot
+            modis_data = plot_data.dropna(subset=['albedo'])
             
-            # Create box plots for each method
-            methods_in_data = plot_data['method'].unique()
-            
-            for method in methods_in_data:
-                method_data = plot_data[plot_data['method'] == method]['albedo'].dropna()
+            if not modis_data.empty:
+                # Create box plot using Plotly Express
+                fig = px.box(
+                    modis_data,
+                    x='method',
+                    y='albedo',
+                    color='method',
+                    color_discrete_map=self.colors,
+                    title=title,
+                    labels={
+                        'method': 'Method',
+                        'albedo': 'Albedo'
+                    },
+                    points='outliers'  # Show outlier points
+                )
                 
-                if not method_data.empty:
-                    fig.add_trace(go.Box(
-                        y=method_data,
-                        name=method,
-                        marker_color=self.colors.get(method, '#1f77b4'),
-                        boxpoints='outliers'
-                    ))
+                # Remove the separate color legend since x-axis already shows methods
+                fig.update_layout(showlegend=False)
+            else:
+                fig = go.Figure()
             
             # Add AWS data if available
             if 'aws_albedo' in plot_data.columns:
@@ -338,18 +361,18 @@ class PlotComponents:
                     fig.add_trace(go.Box(
                         y=aws_data,
                         name='AWS',
-                        marker_color=self.colors.get('AWS', '#d62728'),
-                        boxpoints='outliers'
+                        marker_color=self.colors.get('AWS', '#8c564b'),
+                        boxpoints='outliers',
+                        x=['AWS'] * len(aws_data)  # Position AWS box
                     ))
+                    fig.update_layout(showlegend=True)  # Show legend when AWS is present
             
             # Update layout
             fig.update_layout(
-                title=title,
-                xaxis_title='Method',
-                yaxis_title='Albedo',
-                width=self.figure_size[0] * 80,
+                width=self.figure_size[0] * 80,          
                 height=self.figure_size[1] * 60,
-                showlegend=True
+                xaxis_title='Method',
+                yaxis_title='Albedo'
             )
             
             return fig
@@ -376,29 +399,40 @@ class PlotComponents:
             if data is None or data.empty:
                 return self._create_empty_plot("No data available for histogram")
             
-            fig = go.Figure()
+            # Prepare data with method as string for categorical handling
+            plot_data = data.copy()
+            if 'method' in plot_data.columns:
+                plot_data['method'] = plot_data['method'].astype(str)
             
             # Filter methods if specified
-            if methods and 'method' in data.columns:
-                plot_data = data[data['method'].isin(methods)]
-            else:
-                plot_data = data
+            if methods and 'method' in plot_data.columns:
+                plot_data = plot_data[plot_data['method'].isin(methods)]
             
-            # Create histograms for each method
-            if 'method' in plot_data.columns:
-                methods_in_data = plot_data['method'].unique()
+            # Create histogram using Plotly Express for MODIS data
+            if 'method' in plot_data.columns and 'albedo' in plot_data.columns:
+                # Remove NaN values for cleaner plot
+                modis_data = plot_data.dropna(subset=['albedo'])
                 
-                for method in methods_in_data:
-                    method_data = plot_data[plot_data['method'] == method]['albedo'].dropna()
-                    
-                    if not method_data.empty:
-                        fig.add_trace(go.Histogram(
-                            x=method_data,
-                            name=method,
-                            opacity=0.7,
-                            marker_color=self.colors.get(method, '#1f77b4'),
-                            nbinsx=30
-                        ))
+                if not modis_data.empty:
+                    fig = px.histogram(
+                        modis_data,
+                        x='albedo',
+                        color='method',
+                        color_discrete_map=self.colors,
+                        title=title,
+                        labels={
+                            'albedo': 'Albedo',
+                            'method': 'Method',
+                            'count': 'Frequency'
+                        },
+                        nbins=30,
+                        opacity=0.7,
+                        barmode='overlay'  # Overlay histograms for comparison
+                    )
+                else:
+                    fig = go.Figure()
+            else:
+                fig = go.Figure()
             
             # Add AWS data if available
             if 'aws_albedo' in plot_data.columns:
@@ -408,19 +442,18 @@ class PlotComponents:
                         x=aws_data,
                         name='AWS',
                         opacity=0.7,
-                        marker_color=self.colors.get('AWS', '#d62728'),
+                        marker_color=self.colors.get('AWS', '#8c564b'),
                         nbinsx=30
                     ))
             
             # Update layout
             fig.update_layout(
-                title=title,
-                xaxis_title='Albedo',
-                yaxis_title='Frequency',
                 width=self.figure_size[0] * 80,
                 height=self.figure_size[1] * 60,
                 barmode='overlay',
-                showlegend=True
+                showlegend=True,
+                xaxis_title='Albedo',
+                yaxis_title='Frequency'
             )
             
             return fig

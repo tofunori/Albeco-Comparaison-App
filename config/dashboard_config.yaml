@@ -7,10 +7,10 @@ app:
 
 # Data paths
 data:
-  base_path: "data"
-  modis_path: "data/modis"
-  aws_path: "data/aws"
-  glacier_masks_path: "data/glacier_masks"
+  base_path: "../Albedo_analysis_New/data"
+  modis_path: "../Albedo_analysis_New/data/modis"
+  aws_path: "../Albedo_analysis_New/data/aws"
+  glacier_masks_path: "../Albedo_analysis_New/data/glacier_masks"
 
 # Analysis settings
 analysis:
