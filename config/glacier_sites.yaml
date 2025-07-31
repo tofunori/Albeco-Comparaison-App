@@ -20,8 +20,8 @@ glaciers:
     aws_stations:
       iceAWS_Atha:
         name: "Athabasca Glacier AWS"
-        lat: 50.7124
-        lon: -115.3018
+        lat: 52.1938
+        lon: -117.2502
         elevation: 2200
     # Athabasca-specific settings
     data_type: "athabasca_multiproduct"  # Flag for custom processing
@@ -46,7 +46,7 @@ glaciers:
         name: "Haig Glacier AWS"
         lat: 50.7124
         lon: -115.3018
-        elevation: 2800
+        elevation: 2665
     # Haig-specific settings (enhanced plotting like Athabasca)
     data_type: "athabasca_multiproduct"  # Flag for custom processing
     outlier_threshold: 2.5

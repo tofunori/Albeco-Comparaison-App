@@ -16,6 +16,7 @@ from datetime import datetime, date
 import logging
 from pathlib import Path
 import sys
+import os
 import traceback
 from typing import List
 
@@ -33,6 +34,34 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_aws_coordinates_from_shapefile(glacier_id):
+    """Read AWS coordinates from shapefile for the given glacier."""
+    try:
+        if glacier_id == 'athabasca':
+            import geopandas as gpd
+            shp_path = "data/glacier_masks/athabasca/Point_Custom.shp"
+            
+            if os.path.exists(shp_path):
+                gdf = gpd.read_file(shp_path)
+                if not gdf.empty:
+                    # Get the first point (assuming there's only one AWS station)
+                    point = gdf.geometry.iloc[0]
+                    aws_lat = point.y
+                    aws_lon = point.x
+                    logger.info(f"Found AWS coordinates in shapefile: lat={aws_lat}, lon={aws_lon}")
+                    return aws_lat, aws_lon
+                else:
+                    logger.warning(f"Shapefile {shp_path} is empty")
+            else:
+                logger.warning(f"AWS shapefile not found: {shp_path}")
+        else:
+            logger.info(f"No shapefile configured for glacier: {glacier_id}")
+    except Exception as e:
+        logger.error(f"Error reading AWS coordinates from shapefile: {e}")
+    
+    return None
 
 
 def calculate_scatter_plot_statistics(data, selected_methods=None):
@@ -191,23 +220,18 @@ def create_layout():
                             dbc.Button("Update Plots", id="update-plots-btn", color="success", size="sm", className="mb-2"),
                             dbc.Switch(id='aws-toggle', label='Include AWS data', value=True),
                             html.Hr(),
-                            html.Label("Data Selection Mode:", className="form-label"),
+                            html.Label("Pixel Filtering:", className="form-label"),
                             dbc.Tooltip(
-                                "Base dataset mode: All (use full dataset, filter by selection if any), Selected (require pixel selection), Best (highest quality data, filter by selection if any)",
+                                "Use custom filters to select pixels based on distance, glacier fraction, and quality criteria",
                                 target="data-mode-radio",
                                 placement="top"
                             ),
                             dcc.RadioItems(
                                 id='data-mode-radio',
                                 options=[
-                                    {'label': 'All pixels', 'value': 'all'},
-                                    {'label': 'Selected pixels only', 'value': 'selected'},
-                                    {'label': 'Best quality pixels', 'value': 'best'},
-                                    {'label': 'Closest to AWS', 'value': 'closest_aws'},
-                                    {'label': 'High glacier fraction', 'value': 'high_glacier_fraction'},
                                     {'label': 'Custom filters', 'value': 'custom'}
                                 ],
-                                value='all',
+                                value='custom',
                                 inline=False,
                                 className='mb-2'
                             ),
@@ -222,7 +246,7 @@ def create_layout():
                                     dbc.Switch(
                                         id='distance-filter-toggle',
                                         label='Distance Filter',
-                                        value=False,
+                                        value=True,  # Enable by default
                                         className='mb-2'
                                     ),
                                     html.Div([
@@ -237,13 +261,13 @@ def create_layout():
                                         dcc.Input(
                                             id='max-distance-input',
                                             type='number',
-                                            placeholder='e.g., 10.0',
-                                            value=10.0,
+                                            placeholder='e.g., 0.5',
+                                            value=0.5,  # Default to 0.5km
                                             min=0.1, max=50.0, step=0.1,
                                             size='10',
                                             className='form-control form-control-sm mb-2'
                                         )
-                                    ], id='distance-filter-controls', style={'display': 'none'})
+                                    ], id='distance-filter-controls', style={'display': 'block'})  # Show by default
                                 ]),
                                 
                                 # Glacier fraction filtering controls
@@ -756,7 +780,16 @@ def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
             elif data_mode == 'closest_aws' and len(filtered_data) > 0:
                 # Calculate distances and select the single closest pixel
                 try:
-                    aws_lat, aws_lon = 52.1938, -117.2502  # Athabasca AWS coordinates
+                    # Try to get AWS coordinates from shapefile first
+                    aws_coords_from_shp = get_aws_coordinates_from_shapefile(glacier_id)
+                    if aws_coords_from_shp:
+                        aws_lat, aws_lon = aws_coords_from_shp
+                        logger.info(f"Using AWS coordinates from shapefile for filtering: lat={aws_lat}, lon={aws_lon}")
+                    else:
+                        # Fallback to hardcoded coordinates
+                        aws_lat, aws_lon = 52.1938, -117.2502  # Athabasca AWS coordinates
+                        logger.info(f"Using fallback AWS coordinates for filtering: lat={aws_lat}, lon={aws_lon}")
+                    
                     unique_pixels = filtered_data[['pixel_id', 'latitude', 'longitude']].drop_duplicates('pixel_id')
                     
                     min_distance = float('inf')
@@ -935,26 +968,72 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
                 )
                 map_children.append(marker)
         
-        # Add AWS station marker
+        # Add AWS station marker with enhanced logging
         try:
-            aws_info = data_manager.get_aws_station_info(glacier_id)
-            if aws_info:
+            logger.info(f"Attempting to get AWS station info for glacier: {glacier_id}")
+            
+            # Try to get AWS coordinates from shapefile first
+            aws_coords_from_shp = get_aws_coordinates_from_shapefile(glacier_id)
+            if aws_coords_from_shp:
+                aws_lat, aws_lon = aws_coords_from_shp
+                aws_name = "Athabasca Glacier AWS (from shapefile)"
+                aws_elevation = 2200  # Known elevation
+                logger.info(f"Using AWS coordinates from shapefile: lat={aws_lat}, lon={aws_lon}")
+            else:
+                # Fallback to configuration file
+                aws_info = data_manager.get_aws_station_info(glacier_id)
+                logger.info(f"AWS info for {glacier_id}: {aws_info}")
+                
+                if aws_info:
+                    aws_lat = float(aws_info['lat'])
+                    aws_lon = float(aws_info['lon'])
+                    aws_name = aws_info.get('name', 'AWS Station')
+                    aws_elevation = aws_info.get('elevation', 'Unknown')
+                else:
+                    aws_lat = aws_lon = aws_name = aws_elevation = None
+                
+            
+            if aws_lat is not None and aws_lon is not None:
+                logger.info(f"Creating AWS marker at lat={aws_lat}, lon={aws_lon}, name={aws_name}")
+                
+                # Create enhanced tooltip with more information
+                tooltip_content = f"🌡️ {aws_name}\nElevation: {aws_elevation}m\nCoords: {aws_lat:.4f}, {aws_lon:.4f}"
+                
+                # Create popup with detailed information
+                popup_content = html.Div([
+                    html.H6(aws_name, className="mb-2"),
+                    html.P([
+                        html.Strong("Type: "), "Automatic Weather Station", html.Br(),
+                        html.Strong("Elevation: "), f"{aws_elevation} m", html.Br(),
+                        html.Strong("Coordinates: "), f"{aws_lat:.4f}, {aws_lon:.4f}", html.Br(),
+                        html.Strong("Source: "), "Shapefile" if aws_coords_from_shp else "Configuration"
+                    ], className="small mb-0")
+                ])
+                
                 aws_marker = dl.Marker(
-                    position=[aws_info['lat'], aws_info['lon']],
+                    position=[aws_lat, aws_lon],
                     id="aws-station-marker",
-                    children=[dl.Tooltip(f"AWS Station: {aws_info.get('name', 'Station')}")],
+                    children=[
+                        dl.Tooltip(tooltip_content),
+                        dl.Popup(popup_content, closeButton=True)
+                    ],
                     icon={
                         'iconUrl': 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
                         'shadowUrl': 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                        'iconSize': [15, 15],
-                        'iconAnchor': [7, 15],
-                        'popupAnchor': [1, -15],
-                        'shadowSize': [15, 15]
+                        'iconSize': [25, 41],  # Larger size for better visibility
+                        'iconAnchor': [12, 41],
+                        'popupAnchor': [1, -34],
+                        'shadowSize': [41, 41]
                     }
                 )
                 map_children.append(aws_marker)
+                logger.info(f"✅ Successfully added AWS marker for {glacier_id} at position [{aws_lat}, {aws_lon}]")
+            else:
+                logger.warning(f"❌ No AWS station info found for {glacier_id}")
         except Exception as e:
-            logger.warning(f"Could not add AWS marker: {e}")
+            logger.error(f"❌ Could not add AWS marker: {e}")
+            import traceback
+            traceback.print_exc()
         
         # Create the map
         map_component = dl.Map(
@@ -1437,7 +1516,7 @@ def update_content_on_selection(selected_pixels, selected_methods, include_aws, 
             
             # Show message if no data after filtering
             if data.empty:
-                return dbc.Alert(f"No data available for current selection mode", color="warning")
+                return dbc.Alert("No data available for current selection mode", color="warning")
             
             # Filter by methods
             if selected_methods and 'method' in data.columns:
@@ -1709,11 +1788,8 @@ def export_plot(n_clicks, active_tab, glacier_id):
     Input('data-mode-radio', 'value')
 )
 def toggle_advanced_filters(data_mode):
-    """Show advanced filters only when custom mode is selected."""
-    if data_mode == 'custom':
-        return {'display': 'block'}
-    else:
-        return {'display': 'none'}
+    """Always show advanced filters since we only have custom mode."""
+    return {'display': 'block'}
 
 
 # Callback to show/hide distance filter controls
@@ -1723,6 +1799,10 @@ def toggle_advanced_filters(data_mode):
 )
 def toggle_distance_controls(is_enabled):
     """Show distance filter controls when toggle is enabled."""
+    if is_enabled:
+        return {'display': 'block'}
+    else:
+        return {'display': 'none'}
     if is_enabled:
         return {'display': 'block'}
     else:
