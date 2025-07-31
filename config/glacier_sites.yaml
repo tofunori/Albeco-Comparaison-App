@@ -31,8 +31,8 @@ glaciers:
     name: "Haig Glacier" 
     region: "Canadian Rockies"
     coordinates:
-      lat: 50.73
-      lon: -116.17
+      lat: 50.714
+      lon: -115.309
     data_files:
       modis:
         # Using the multi-product file for all methods (will be processed by custom loader)

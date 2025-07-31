@@ -646,6 +646,9 @@ def update_tab_content(active_tab, n_clicks, selected_methods, include_aws, data
 
 def get_pixel_marker_style(pixel_id, is_selected, passes_filter, filter_params=None):
     """Determine marker style based on pixel state."""
+    # DEBUG: Log parameters for troubleshooting
+    logger.info(f"Styling pixel {pixel_id}: is_selected={is_selected}, passes_filter={passes_filter}, filter_params={filter_params}")
+    
     # Define marker styles for different states
     styles = {
         'excluded': {
@@ -768,6 +771,7 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
         # Determine which pixels pass current filters
         filtered_pixel_ids = determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params)
         logger.info(f"Filtered pixel IDs: {filtered_pixel_ids} (count: {len(filtered_pixel_ids)})")
+        logger.info(f"All pixel IDs in data: {set(str(p) for p in pixel_data['pixel_id'].unique())}")
         
         # Calculate map center from actual pixel data (more accurate than config)
         if not pixel_data.empty and 'latitude' in pixel_data.columns and 'longitude' in pixel_data.columns:
@@ -791,6 +795,9 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
                 pixel_id = str(pixel['pixel_id'])
                 is_selected = pixel_id in selected_pixels
                 passes_filter = pixel_id in filtered_pixel_ids
+                
+                # DEBUG: Log filter determination
+                logger.info(f"Pixel {pixel_id}: in selected_pixels={is_selected}, in filtered_pixel_ids={passes_filter}")
                 
                 # Get enhanced marker style
                 style = get_pixel_marker_style(pixel_id, is_selected, passes_filter, filter_params)
@@ -824,10 +831,15 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
                     )
                 ]
                 
-                # Use CircleMarker for dynamic color styling
+                # Use CircleMarker with dynamic ID for color changes (dash-leaflet requirement)
+                # Include filter state and timestamp in ID to force re-render when colors change
+                filter_state = f"{passes_filter}_{style['color']}"
+                import time
+                timestamp = int(time.time() * 1000) % 10000  # Short timestamp to avoid long IDs
+                
                 marker = dl.CircleMarker(
                     center=[pixel['latitude'], pixel['longitude']],
-                    id={'type': 'pixel-marker', 'pixel_id': pixel_id},
+                    id={'type': 'pixel-marker', 'pixel_id': pixel_id, 'filter_state': filter_state, 'ts': timestamp},
                     children=[
                         dl.Tooltip(tooltip_text),
                         dl.Popup(html.Div(popup_content))

@@ -325,25 +325,25 @@ class DashboardDataManager:
             if aws_file:
                 aws_path = self.aws_path / aws_file
                 if aws_path.exists():
-                    aws_data = pd.read_csv(aws_path)
-                    logger.info(f"Loaded AWS data: {len(aws_data)} records")
+                    aws_data = self._load_aws_data(aws_path, glacier_id)
+                    if aws_data is not None:
+                        logger.info(f"Loaded AWS data: {len(aws_data)} records")
                     
-                    # Simple merge by date (basic implementation)
-                    if 'Time' in aws_data.columns and 'date' in modis_data.columns:
-                        # Convert AWS time to date
-                        aws_data['date'] = pd.to_datetime(aws_data['Time']).dt.date
-                        modis_data['modis_date'] = modis_data['date'].dt.date
+                    # Merge AWS data with MODIS data by date
+                    if aws_data is not None and 'date' in aws_data.columns and 'aws_albedo' in aws_data.columns:
+                        # Convert both dates to date (not datetime) for consistent matching
+                        aws_data['merge_date'] = aws_data['date'].dt.date
+                        modis_data['merge_date'] = modis_data['date'].dt.date
                         
                         # Merge on date
-                        merged_data = pd.merge(modis_data, aws_data[['date', 'Albedo']], 
-                                             left_on='modis_date', right_on='date', 
-                                             how='left', suffixes=('', '_aws'))
-                        merged_data.rename(columns={'Albedo': 'aws_albedo'}, inplace=True)
+                        merged_data = pd.merge(modis_data, aws_data[['merge_date', 'aws_albedo']], 
+                                             on='merge_date', 
+                                             how='left')
                         
                         # Clean up temporary columns
-                        merged_data.drop(['modis_date', 'date_aws'], axis=1, inplace=True, errors='ignore')
+                        merged_data.drop(['merge_date'], axis=1, inplace=True, errors='ignore')
                         
-                        logger.info(f"Merged with AWS data: {len(merged_data)} records")
+                        logger.info(f"Merged with AWS data: {len(merged_data)} records with AWS data")
                         return merged_data
                     else:
                         logger.warning("Could not merge AWS data - missing required columns")
@@ -362,6 +362,107 @@ class DashboardDataManager:
             logger.error(f"Error in simple CSV loading for {glacier_id}: {e}")
             import traceback
             traceback.print_exc()
+            return None
+    
+    def _load_aws_data(self, aws_path: Path, glacier_id: str) -> Optional[pd.DataFrame]:
+        """
+        Load AWS data with custom parsing for different file formats.
+        
+        Args:
+            aws_path: Path to AWS data file
+            glacier_id: Glacier identifier for format-specific handling
+            
+        Returns:
+            DataFrame with AWS data or None if loading fails
+        """
+        try:
+            # Handle Haig glacier's special format
+            if glacier_id == 'haig':
+                return self._load_haig_aws_data(aws_path)
+            
+            # Handle standard CSV formats (Athabasca, Coropuna)
+            aws_data = pd.read_csv(aws_path)
+            
+            # Standardize column names based on common patterns
+            if 'Timestamp' in aws_data.columns and 'Albedo' in aws_data.columns:
+                # Coropuna format
+                aws_data['date'] = pd.to_datetime(aws_data['Timestamp'])
+                aws_data['aws_albedo'] = aws_data['Albedo']
+                return aws_data[['date', 'aws_albedo']]
+            
+            elif 'Time' in aws_data.columns and 'Albedo' in aws_data.columns:
+                # Athabasca format
+                aws_data['date'] = pd.to_datetime(aws_data['Time'])
+                aws_data['aws_albedo'] = aws_data['Albedo']
+                return aws_data[['date', 'aws_albedo']]
+            
+            else:
+                logger.warning(f"Unknown AWS file format for {glacier_id}: columns = {list(aws_data.columns)}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error loading AWS data for {glacier_id}: {e}")
+            return None
+    
+    def _load_haig_aws_data(self, aws_path: Path) -> Optional[pd.DataFrame]:
+        """
+        Load Haig AWS data with custom parsing for the complex header format.
+        
+        Args:
+            aws_path: Path to Haig AWS data file
+            
+        Returns:
+            DataFrame with date and albedo columns
+        """
+        try:
+            # Read the file line by line to handle the complex header
+            with open(aws_path, 'r', encoding='utf-8-sig') as file:
+                lines = file.readlines()
+            
+            # Find the actual data start (after the headers)
+            data_start_idx = None
+            for i, line in enumerate(lines):
+                if line.strip().startswith('Year;Day;'):
+                    data_start_idx = i + 1  # Data starts after the column header line
+                    break
+            
+            if data_start_idx is None:
+                logger.error("Could not find data start in Haig AWS file")
+                return None
+            
+            # Parse the data lines
+            data_rows = []
+            for line in lines[data_start_idx:]:
+                if line.strip():  # Skip empty lines
+                    parts = line.strip().split(';')
+                    if len(parts) >= 13:  # Ensure we have enough columns
+                        try:
+                            year = int(parts[0])
+                            day = int(parts[1])
+                            albedo_str = parts[12].replace(',', '.')  # Replace comma with dot for decimal
+                            albedo = float(albedo_str)
+                            
+                            # Convert year and day to date
+                            date = pd.to_datetime(f'{year}-01-01') + pd.Timedelta(days=day-1)
+                            
+                            data_rows.append({
+                                'date': date,
+                                'aws_albedo': albedo
+                            })
+                        except (ValueError, IndexError) as e:
+                            logger.debug(f"Skipping invalid line in Haig AWS: {line.strip()[:50]}... - {e}")
+                            continue
+            
+            if data_rows:
+                aws_data = pd.DataFrame(data_rows)
+                logger.info(f"Successfully parsed Haig AWS data: {len(aws_data)} records")
+                return aws_data
+            else:
+                logger.error("No valid data rows found in Haig AWS file")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error parsing Haig AWS data: {e}")
             return None
 
     def calculate_statistics(self, data: pd.DataFrame, 
