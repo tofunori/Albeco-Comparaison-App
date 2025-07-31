@@ -361,7 +361,8 @@ def handle_map_click(click_lat_lng, current_selected, pixel_data_json):
             # Find closest pixel
             closest_idx = distances.idxmin()
             closest_pixel = pixel_data.loc[closest_idx]
-            pixel_id = str(closest_pixel['pixel_id'])
+            # Normalize pixel ID to ensure consistency (int conversion handles float->int)
+            pixel_id = str(int(closest_pixel['pixel_id']))
             
             # Update selection
             selected_pixels = current_selected or []
@@ -377,13 +378,25 @@ def handle_map_click(click_lat_lng, current_selected, pixel_data_json):
             if selected_pixels:
                 selected_info = []
                 for pid in selected_pixels:
-                    pixel_info = pixel_data[pixel_data['pixel_id'] == int(pid)]
-                    if not pixel_info.empty:
-                        pixel_row = pixel_info.iloc[0]
-                        selected_info.append(
-                            html.P(f"Pixel {pid}: {pixel_row['latitude']:.4f}, {pixel_row['longitude']:.4f}",
-                                  className='mb-1')
-                        )
+                    # Convert pid to int for matching since DataFrame may have int pixel_ids
+                    try:
+                        pixel_id_int = int(pid)
+                        pixel_info = pixel_data[pixel_data['pixel_id'] == pixel_id_int]
+                        if not pixel_info.empty:
+                            pixel_row = pixel_info.iloc[0]
+                            selected_info.append(
+                                html.P(f"Pixel {pid}: {pixel_row['latitude']:.4f}, {pixel_row['longitude']:.4f}",
+                                      className='mb-1')
+                            )
+                    except (ValueError, TypeError):
+                        # If conversion fails, try direct string match
+                        pixel_info = pixel_data[pixel_data['pixel_id'].astype(str) == pid]
+                        if not pixel_info.empty:
+                            pixel_row = pixel_info.iloc[0]
+                            selected_info.append(
+                                html.P(f"Pixel {pid}: {pixel_row['latitude']:.4f}, {pixel_row['longitude']:.4f}",
+                                      className='mb-1')
+                            )
                 selection_content = selected_info
             else:
                 selection_content = [html.P("No pixels selected", className='text-muted')]
