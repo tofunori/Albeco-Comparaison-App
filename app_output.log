@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "D:\Documents\Projects\glacier_interactive_dashboard\app_fixed.py", line 8, in <module>
+    import dash
+ModuleNotFoundError: No module named 'dash'

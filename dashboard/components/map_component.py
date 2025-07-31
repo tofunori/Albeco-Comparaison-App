@@ -90,14 +90,27 @@ class MapComponent:
         markers = []
         selected_pixels = selected_pixels or []
         
+        # Normalize selected pixels to handle type consistency
+        # Convert all selected pixels to strings and handle float conversion
+        normalized_selected = []
+        for pixel_id in selected_pixels:
+            # Convert to string and handle potential .0 suffix from float conversion
+            str_id = str(pixel_id)
+            if str_id.endswith('.0'):
+                str_id = str_id[:-2]  # Remove .0 suffix
+            normalized_selected.append(str_id)
+        
         for _, pixel in pixels_df.iterrows():
             try:
-                pixel_id = str(pixel['pixel_id'])
+                # Normalize pixel ID consistently
+                raw_pixel_id = pixel['pixel_id']
+                pixel_id = str(int(raw_pixel_id))  # Convert to int first, then string to avoid .0
+                
                 lat = float(pixel['latitude'])
                 lon = float(pixel['longitude'])
                 
                 # Determine marker properties based on selection
-                is_selected = pixel_id in selected_pixels
+                is_selected = pixel_id in normalized_selected
                 marker_size = self.selected_marker_size if is_selected else self.marker_size
                 marker_color = 'red' if is_selected else 'blue'
                 
