@@ -699,20 +699,98 @@ def get_pixel_marker_style(pixel_id, is_selected, passes_filter, filter_params=N
 def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
     """Determine which pixels pass the current filters."""
     try:
-        if not filter_params or not data_json:
-            return set()
+        if not filter_params:
+            # If no filter params, all pixels pass
+            return set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
             
         from io import StringIO
         import pandas as pd
         
-        # Load full data for filtering calculations
-        data = pd.read_json(StringIO(data_json))
-        
-        # For custom filters mode, apply filtering directly here based on pixel-level data
         data_mode = filter_params.get('data_mode', 'all')
+        logger.info(f"Processing filter mode: {data_mode}")
         
-        if data_mode == 'custom':
-            # Apply glacier fraction filtering if enabled
+        # Handle different data selection modes
+        if data_mode == 'all':
+            # All pixels pass - return all pixel IDs with consistent formatting
+            result_set = set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
+            logger.info(f"All pixels mode: {len(result_set)} pixels pass")
+            return result_set
+            
+        elif data_mode == 'selected':
+            # Only manually selected pixels pass - this will be handled by is_selected logic
+            # Return empty set since selection is handled separately
+            return set()
+            
+        elif data_mode in ['best', 'closest_aws', 'high_glacier_fraction']:
+            # These modes require data filtering
+            if not data_json:
+                logger.warning(f"No data available for {data_mode} filtering")
+                return set()
+                
+            # Load full data for filtering calculations
+            data = pd.read_json(StringIO(data_json))
+            logger.info(f"Loaded data for filtering: {len(data)} records")
+            
+            # Get glacier info for enhanced filtering
+            glacier_info = data_manager.glacier_config.get('glaciers', {}).get(glacier_id, {})
+            
+            # Apply filtering based on mode
+            filtered_data = _filter_data_by_mode_enhanced(data, data_mode, [], glacier_info, filter_params)
+            logger.info(f"Filtered data: {len(filtered_data)} records")
+            
+            # For 'best' and 'closest_aws' modes, select only the single best pixel
+            if data_mode == 'best' and len(filtered_data) > 0:
+                # Select the pixel with the best QA score (lowest value)
+                if 'qa_score' in filtered_data.columns:
+                    pixel_scores = filtered_data.groupby('pixel_id')['qa_score'].min()
+                    best_pixel_id = pixel_scores.idxmin()
+                    result_set = {str(int(best_pixel_id))}
+                    logger.info(f"best mode: selected single best pixel {best_pixel_id} with QA score {pixel_scores.min()}")
+                else:
+                    # Fallback: select first pixel
+                    best_pixel_id = filtered_data['pixel_id'].iloc[0]
+                    result_set = {str(int(best_pixel_id))}
+                    logger.info(f"best mode: fallback selected pixel {best_pixel_id}")
+                return result_set
+                
+            elif data_mode == 'closest_aws' and len(filtered_data) > 0:
+                # Calculate distances and select the single closest pixel
+                try:
+                    aws_lat, aws_lon = 52.1938, -117.2502  # Athabasca AWS coordinates
+                    unique_pixels = filtered_data[['pixel_id', 'latitude', 'longitude']].drop_duplicates('pixel_id')
+                    
+                    min_distance = float('inf')
+                    closest_pixel_id = None
+                    
+                    for _, pixel in unique_pixels.iterrows():
+                        dist = ((pixel['latitude'] - aws_lat)**2 + (pixel['longitude'] - aws_lon)**2)**0.5
+                        if dist < min_distance:
+                            min_distance = dist
+                            closest_pixel_id = pixel['pixel_id']
+                    
+                    if closest_pixel_id is not None:
+                        result_set = {str(int(closest_pixel_id))}
+                        logger.info(f"closest_aws mode: selected single closest pixel {closest_pixel_id} (distance: {min_distance:.4f})")
+                        return result_set
+                except Exception as e:
+                    logger.error(f"Error calculating closest pixel: {e}")
+                    # Fallback: select first pixel
+                    first_pixel_id = filtered_data['pixel_id'].iloc[0]
+                    result_set = {str(int(first_pixel_id))}
+                    logger.info(f"closest_aws mode: fallback selected pixel {first_pixel_id}")
+                    return result_set
+            
+            # For other modes (high_glacier_fraction), return all pixels that pass filters
+            if 'pixel_id' in filtered_data.columns and len(filtered_data) > 0:
+                result_set = set(str(int(pid)) for pid in filtered_data['pixel_id'].unique())
+                logger.info(f"{data_mode} mode: {len(result_set)} pixels pass filters")
+                return result_set
+            else:
+                logger.warning(f"No pixels pass {data_mode} filters")
+                return set()
+        
+        elif data_mode == 'custom':
+            # Apply custom filtering based on specific parameters
             if filter_params.get('use_glacier_fraction', False):
                 min_fraction = filter_params.get('min_glacier_fraction', 0.7)
                 
@@ -722,40 +800,35 @@ def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
                     return set()
                     
                 unique_pixels = pixel_data[['pixel_id', 'glacier_fraction']].drop_duplicates()
-                logger.info(f"Unique pixels shape: {unique_pixels.shape}")
-                logger.info(f"Glacier fraction values: {unique_pixels['glacier_fraction'].unique()[:5]}...")
+                logger.info(f"Unique pixels for glacier fraction filter: {len(unique_pixels)}")
                 
                 # Filter pixels that pass the glacier fraction threshold
                 passing_pixels = unique_pixels[unique_pixels['glacier_fraction'] >= min_fraction]
                 
                 logger.info(f"Glacier fraction filter: {len(passing_pixels)} out of {len(unique_pixels)} pixels pass (>= {min_fraction})")
-                result_set = set(str(pid) for pid in passing_pixels['pixel_id'].unique())
-                logger.info(f"Returning pixel IDs: {result_set}")
+                result_set = set(str(int(pid)) for pid in passing_pixels['pixel_id'].unique())
                 return result_set
             
-            # If no specific filters are enabled, return all pixels
-            return set(str(pid) for pid in pixel_data['pixel_id'].unique())
-        
-        elif data_mode in ['high_glacier_fraction', 'closest_aws']:
-            # For other special modes, use the enhanced filtering
-            glacier_info = data_manager.glacier_config.get('glaciers', {}).get(glacier_id, {})
-            filtered_data = _filter_data_by_mode_enhanced(data, data_mode, [], glacier_info, filter_params)
-            
-            # Return set of pixel IDs that pass filters
-            if 'pixel_id' in filtered_data.columns:
-                return set(str(pid) for pid in filtered_data['pixel_id'].unique())
-            else:
-                return set()
+            # If no specific custom filters are enabled, return all pixels
+            result_set = set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
+            logger.info(f"Custom mode (no filters): {len(result_set)} pixels pass")
+            return result_set
         
         else:
-            # For 'all', 'selected', 'best' modes, no filtering applied
-            return set(str(pid) for pid in pixel_data['pixel_id'].unique())
+            # Unknown mode - return all pixels as fallback
+            logger.warning(f"Unknown data mode: {data_mode}, returning all pixels")
+            return set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
             
     except Exception as e:
         logger.error(f"Error determining filtered pixels: {e}")
         import traceback
         traceback.print_exc()
-        return set()
+        # Return all pixels as fallback to avoid breaking the UI
+        try:
+            return set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
+        except Exception as fallback_error:
+            logger.error(f"Fallback also failed: {fallback_error}")
+            return set()
 
 def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, filter_params=None):
     """Create the map content for the map tab with enhanced filtering visualization."""
@@ -791,9 +864,18 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
         
         # Add enhanced pixel markers with filtering visualization
         if not pixel_data.empty and 'latitude' in pixel_data.columns and 'longitude' in pixel_data.columns:
+            # Normalize selected pixels for consistent comparison
+            normalized_selected = []
+            for pid in (selected_pixels or []):
+                normalized_pid = str(int(float(pid))) if pid else str(pid)
+                normalized_selected.append(normalized_pid)
+            
             for _, pixel in pixel_data.iterrows():
-                pixel_id = str(pixel['pixel_id'])
-                is_selected = pixel_id in selected_pixels
+                # Normalize pixel ID consistently with filtering function
+                raw_pixel_id = pixel['pixel_id']
+                pixel_id = str(int(raw_pixel_id))  # Convert to int first, then string to avoid .0
+                
+                is_selected = pixel_id in normalized_selected
                 passes_filter = pixel_id in filtered_pixel_ids
                 
                 # DEBUG: Log filter determination
