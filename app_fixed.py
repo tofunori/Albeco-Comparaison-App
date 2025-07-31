@@ -56,12 +56,39 @@ def get_aws_coordinates_from_shapefile(glacier_id):
                     logger.warning(f"Shapefile {shp_path} is empty")
             else:
                 logger.warning(f"AWS shapefile not found: {shp_path}")
+        elif glacier_id == 'coropuna':
+            import geopandas as gpd
+            shp_path = "data/glacier_masks/coropuna/aws_station_point.shp"
+            
+            if os.path.exists(shp_path):
+                gdf = gpd.read_file(shp_path)
+                if not gdf.empty:
+                    # Get the first point (assuming there's only one AWS station)
+                    point = gdf.geometry.iloc[0]
+                    aws_lat = point.y
+                    aws_lon = point.x
+                    logger.info(f"Found AWS coordinates in shapefile: lat={aws_lat}, lon={aws_lon}")
+                    return aws_lat, aws_lon
+                else:
+                    logger.warning(f"Shapefile {shp_path} is empty")
+            else:
+                logger.warning(f"AWS shapefile not found: {shp_path}")
         else:
             logger.info(f"No shapefile configured for glacier: {glacier_id}")
     except Exception as e:
         logger.error(f"Error reading AWS coordinates from shapefile: {e}")
     
     return None
+
+
+def get_aws_coordinates_fallback(glacier_id):
+    """Get fallback AWS coordinates for different glaciers."""
+    fallback_coords = {
+        'athabasca': (52.1938, -117.2502),    # Athabasca AWS coordinates
+        'haig': (50.7124, -115.3018),         # Haig AWS coordinates from HaigAWS_daily_2002_2015_gapfilled.csv
+        'coropuna': (-15.536111, -72.59972),  # Coropuna AWS coordinates from aws_station_point.shp
+    }
+    return fallback_coords.get(glacier_id)
 
 
 def calculate_scatter_plot_statistics(data, selected_methods=None):
@@ -786,9 +813,14 @@ def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
                         aws_lat, aws_lon = aws_coords_from_shp
                         logger.info(f"Using AWS coordinates from shapefile for filtering: lat={aws_lat}, lon={aws_lon}")
                     else:
-                        # Fallback to hardcoded coordinates
-                        aws_lat, aws_lon = 52.1938, -117.2502  # Athabasca AWS coordinates
-                        logger.info(f"Using fallback AWS coordinates for filtering: lat={aws_lat}, lon={aws_lon}")
+                        # Use glacier-specific fallback coordinates
+                        fallback_coords = get_aws_coordinates_fallback(glacier_id)
+                        if fallback_coords:
+                            aws_lat, aws_lon = fallback_coords
+                            logger.info(f"Using fallback AWS coordinates for {glacier_id}: lat={aws_lat}, lon={aws_lon}")
+                        else:
+                            aws_lat, aws_lon = 52.1938, -117.2502  # Default to Athabasca as last resort
+                            logger.warning(f"No AWS coordinates found for {glacier_id}, using Athabasca fallback: lat={aws_lat}, lon={aws_lon}")
                     
                     unique_pixels = filtered_data[['pixel_id', 'latitude', 'longitude']].drop_duplicates('pixel_id')
                     
@@ -824,6 +856,11 @@ def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
         
         elif data_mode == 'custom':
             # Apply custom filtering based on specific parameters
+            # Start with all pixels
+            unique_pixels = pixel_data[['pixel_id', 'latitude', 'longitude', 'glacier_fraction']].drop_duplicates('pixel_id')
+            result_set = set(str(int(pid)) for pid in unique_pixels['pixel_id'].unique())
+            
+            # Apply glacier fraction filter if enabled
             if filter_params.get('use_glacier_fraction', False):
                 min_fraction = filter_params.get('min_glacier_fraction', 0.7)
                 
@@ -832,7 +869,6 @@ def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
                     logger.error(f"glacier_fraction column not found in pixel_data. Available columns: {list(pixel_data.columns)}")
                     return set()
                     
-                unique_pixels = pixel_data[['pixel_id', 'glacier_fraction']].drop_duplicates()
                 logger.info(f"Unique pixels for glacier fraction filter: {len(unique_pixels)}")
                 
                 # Filter pixels that pass the glacier fraction threshold
@@ -840,11 +876,79 @@ def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
                 
                 logger.info(f"Glacier fraction filter: {len(passing_pixels)} out of {len(unique_pixels)} pixels pass (>= {min_fraction})")
                 result_set = set(str(int(pid)) for pid in passing_pixels['pixel_id'].unique())
-                return result_set
+                unique_pixels = passing_pixels  # Update for next filter
             
-            # If no specific custom filters are enabled, return all pixels
-            result_set = set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
-            logger.info(f"Custom mode (no filters): {len(result_set)} pixels pass")
+            # Apply distance filter if enabled
+            if filter_params.get('use_distance_filter', False):
+                max_distance_km = filter_params.get('max_distance_km', 10.0)
+                top_n_closest = filter_params.get('top_n_closest', 5)
+                
+                # Get AWS coordinates
+                try:
+                    # Try to get AWS coordinates from shapefile first
+                    aws_coords_from_shp = get_aws_coordinates_from_shapefile(glacier_id)
+                    if aws_coords_from_shp:
+                        aws_lat, aws_lon = aws_coords_from_shp
+                        logger.info(f"Using AWS coordinates from shapefile for distance filtering: lat={aws_lat}, lon={aws_lon}")
+                    else:
+                        # Use glacier-specific fallback coordinates
+                        fallback_coords = get_aws_coordinates_fallback(glacier_id)
+                        if fallback_coords:
+                            aws_lat, aws_lon = fallback_coords
+                            logger.info(f"Using fallback AWS coordinates for {glacier_id} distance filtering: lat={aws_lat}, lon={aws_lon}")
+                        else:
+                            aws_lat, aws_lon = 52.1938, -117.2502  # Default to Athabasca as last resort
+                            logger.warning(f"No AWS coordinates found for {glacier_id}, using Athabasca fallback for distance filtering: lat={aws_lat}, lon={aws_lon}")
+                    
+                    # Calculate distances for remaining pixels
+                    pixels_with_distance = []
+                    for _, pixel in unique_pixels.iterrows():
+                        # Calculate distance in km using Haversine formula approximation
+                        lat_diff = pixel['latitude'] - aws_lat
+                        lon_diff = pixel['longitude'] - aws_lon
+                        # Simple distance approximation (for small distances)
+                        distance_km = ((lat_diff ** 2 + lon_diff ** 2) ** 0.5) * 111.0  # roughly 111 km per degree
+                        pixels_with_distance.append({
+                            'pixel_id': pixel['pixel_id'],
+                            'distance_km': distance_km
+                        })
+                    
+                    # Sort by distance and apply filters
+                    pixels_with_distance.sort(key=lambda x: x['distance_km'])
+                    
+                    # Apply distance threshold filter first
+                    within_distance = [p for p in pixels_with_distance if p['distance_km'] <= max_distance_km]
+                    logger.info(f"Pixels within {max_distance_km}km distance: {len(within_distance)}/{len(pixels_with_distance)}")
+                    
+                    # Apply top N filter only if it would be more restrictive than distance filter
+                    # Otherwise, use all pixels within the distance threshold
+                    if top_n_closest > 0 and len(within_distance) > top_n_closest:
+                        # Only limit to top N if we have more pixels than requested
+                        final_pixels = within_distance[:top_n_closest]
+                        logger.info(f"Distance filter: Using top {top_n_closest} closest pixels out of {len(within_distance)} within {max_distance_km}km")
+                    else:
+                        # Use all pixels within distance threshold
+                        final_pixels = within_distance
+                        logger.info(f"Distance filter: Using all {len(within_distance)} pixels within {max_distance_km}km")
+                    
+                    result_set = set(str(int(p['pixel_id'])) for p in final_pixels)
+                    
+                    if len(result_set) == 0:
+                        logger.warning(f"No pixels within {max_distance_km}km of AWS station")
+                    
+                except Exception as e:
+                    logger.error(f"Error applying distance filter: {e}")
+                    # Keep current result set as fallback
+            
+            # Check if any filters were applied
+            any_filters_applied = (filter_params.get('use_glacier_fraction', False) or 
+                                 filter_params.get('use_distance_filter', False))
+            
+            if not any_filters_applied:
+                logger.info(f"Custom mode (no filters): {len(result_set)} pixels pass")
+            else:
+                logger.info(f"Custom mode (with filters): {len(result_set)} pixels pass")
+            
             return result_set
         
         else:
@@ -862,6 +966,62 @@ def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
         except Exception as fallback_error:
             logger.error(f"Fallback also failed: {fallback_error}")
             return set()
+
+def get_glacier_mask_path(glacier_id):
+    """Get the path to the glacier mask shapefile for the given glacier."""
+    mask_paths = {
+        'athabasca': 'data/glacier_masks/athabasca/masque_athabasa_zone_ablation.shp',
+        'haig': 'data/glacier_masks/haig/Haig_glacier_final.shp',
+        'coropuna': 'data/glacier_masks/coropuna/coropuna_mask.shp'
+    }
+    return mask_paths.get(glacier_id)
+
+
+def add_glacier_mask_layer(glacier_id):
+    """Add glacier mask as a GeoJSON layer to the map."""
+    try:
+        import geopandas as gpd
+        import json
+        
+        mask_path = get_glacier_mask_path(glacier_id)
+        if not mask_path or not os.path.exists(mask_path):
+            logger.warning(f"Glacier mask shapefile not found for {glacier_id}: {mask_path}")
+            return None
+        
+        # Read the shapefile and convert to GeoJSON
+        gdf = gpd.read_file(mask_path)
+        if gdf.empty:
+            logger.warning(f"Empty glacier mask shapefile for {glacier_id}")
+            return None
+        
+        # Convert to GeoJSON format
+        geojson_data = json.loads(gdf.to_json())
+        
+        # Create glacier mask layer with styling
+        glacier_layer = dl.GeoJSON(
+            data=geojson_data,
+            id=f"glacier-mask-{glacier_id}",
+            options={
+                'style': {
+                    'fillColor': '#87CEEB',  # Sky blue
+                    'color': '#4682B4',      # Steel blue border
+                    'weight': 2,
+                    'opacity': 0.8,
+                    'fillOpacity': 0.3
+                }
+            },
+            children=[
+                dl.Tooltip(f"{glacier_id.title()} Glacier Boundary")
+            ]
+        )
+        
+        logger.info(f"✅ Successfully created glacier mask layer for {glacier_id}")
+        return glacier_layer
+        
+    except Exception as e:
+        logger.error(f"❌ Error creating glacier mask layer for {glacier_id}: {e}")
+        return None
+
 
 def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, filter_params=None):
     """Create the map content for the map tab with enhanced filtering visualization."""
@@ -894,6 +1054,12 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
         
         # Create map elements
         map_children = [dl.TileLayer()]
+        
+        # Add glacier mask layer
+        glacier_mask_layer = add_glacier_mask_layer(glacier_id)
+        if glacier_mask_layer:
+            map_children.append(glacier_mask_layer)
+            logger.info(f"Added glacier mask layer for {glacier_id}")
         
         # Add enhanced pixel markers with filtering visualization
         if not pixel_data.empty and 'latitude' in pixel_data.columns and 'longitude' in pixel_data.columns:
@@ -976,11 +1142,13 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
             aws_coords_from_shp = get_aws_coordinates_from_shapefile(glacier_id)
             if aws_coords_from_shp:
                 aws_lat, aws_lon = aws_coords_from_shp
-                aws_name = "Athabasca Glacier AWS (from shapefile)"
-                aws_elevation = 2200  # Known elevation
+                aws_name = f"{glacier_id.title()} Glacier AWS (from shapefile)"
+                # Set elevation based on glacier
+                elevation_map = {'athabasca': 2200, 'haig': 2665, 'coropuna': 5080}
+                aws_elevation = elevation_map.get(glacier_id, 'Unknown')
                 logger.info(f"Using AWS coordinates from shapefile: lat={aws_lat}, lon={aws_lon}")
             else:
-                # Fallback to configuration file
+                # Try configuration file first
                 aws_info = data_manager.get_aws_station_info(glacier_id)
                 logger.info(f"AWS info for {glacier_id}: {aws_info}")
                 
@@ -990,7 +1158,18 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
                     aws_name = aws_info.get('name', 'AWS Station')
                     aws_elevation = aws_info.get('elevation', 'Unknown')
                 else:
-                    aws_lat = aws_lon = aws_name = aws_elevation = None
+                    # Use glacier-specific fallback coordinates
+                    fallback_coords = get_aws_coordinates_fallback(glacier_id)
+                    if fallback_coords:
+                        aws_lat, aws_lon = fallback_coords
+                        aws_name = f"{glacier_id.title()} Glacier AWS (fallback)"
+                        # Set elevation based on glacier
+                        elevation_map = {'athabasca': 2200, 'haig': 2665, 'coropuna': 5080}
+                        aws_elevation = elevation_map.get(glacier_id, 'Unknown')
+                        logger.info(f"Using fallback AWS coordinates for {glacier_id}: lat={aws_lat}, lon={aws_lon}")
+                    else:
+                        aws_lat = aws_lon = aws_name = aws_elevation = None
+                        logger.warning(f"No AWS coordinates available for {glacier_id}")
                 
             
             if aws_lat is not None and aws_lon is not None:
