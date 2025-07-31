@@ -289,7 +289,13 @@ def update_plots(n_clicks, glacier_data_json, selected_methods, selected_pixels,
         
         # Filter by pixel selection mode
         if pixel_mode == 'selected' and selected_pixels:
-            filtered_data = filtered_data[filtered_data['pixel_id'].isin(selected_pixels)]
+            # Convert selected pixels to integers for consistent matching
+            try:
+                selected_pixel_ints = [int(pid) for pid in selected_pixels]
+                filtered_data = filtered_data[filtered_data['pixel_id'].isin(selected_pixel_ints)]
+            except (ValueError, TypeError):
+                # Fallback to string comparison if int conversion fails
+                filtered_data = filtered_data[filtered_data['pixel_id'].astype(str).isin(selected_pixels)]
         elif pixel_mode == 'best':
             # Select best pixels automatically (placeholder logic)
             if 'glacier_fraction' in filtered_data.columns:
