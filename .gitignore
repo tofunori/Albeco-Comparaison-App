@@ -1,0 +1,33 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary files
+/tmp/
+
+# IDE files
+.vscode/
+.idea/
+
+# Log files
+*.log
+
+# Data files (if too large for git)
+# data/
+
+# Environment files
+.env
+.env.local
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# X-Fidelity analysis results
+.xfiResults/

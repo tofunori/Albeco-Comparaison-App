@@ -16,6 +16,7 @@ from datetime import datetime, date
 import logging
 from pathlib import Path
 import sys
+import os
 import traceback
 from typing import List
 
@@ -33,6 +34,61 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_aws_coordinates_from_shapefile(glacier_id):
+    """Read AWS coordinates from shapefile for the given glacier."""
+    try:
+        if glacier_id == 'athabasca':
+            import geopandas as gpd
+            shp_path = "data/glacier_masks/athabasca/Point_Custom.shp"
+            
+            if os.path.exists(shp_path):
+                gdf = gpd.read_file(shp_path)
+                if not gdf.empty:
+                    # Get the first point (assuming there's only one AWS station)
+                    point = gdf.geometry.iloc[0]
+                    aws_lat = point.y
+                    aws_lon = point.x
+                    logger.info(f"Found AWS coordinates in shapefile: lat={aws_lat}, lon={aws_lon}")
+                    return aws_lat, aws_lon
+                else:
+                    logger.warning(f"Shapefile {shp_path} is empty")
+            else:
+                logger.warning(f"AWS shapefile not found: {shp_path}")
+        elif glacier_id == 'coropuna':
+            import geopandas as gpd
+            shp_path = "data/glacier_masks/coropuna/aws_station_point.shp"
+            
+            if os.path.exists(shp_path):
+                gdf = gpd.read_file(shp_path)
+                if not gdf.empty:
+                    # Get the first point (assuming there's only one AWS station)
+                    point = gdf.geometry.iloc[0]
+                    aws_lat = point.y
+                    aws_lon = point.x
+                    logger.info(f"Found AWS coordinates in shapefile: lat={aws_lat}, lon={aws_lon}")
+                    return aws_lat, aws_lon
+                else:
+                    logger.warning(f"Shapefile {shp_path} is empty")
+            else:
+                logger.warning(f"AWS shapefile not found: {shp_path}")
+        else:
+            logger.info(f"No shapefile configured for glacier: {glacier_id}")
+    except Exception as e:
+        logger.error(f"Error reading AWS coordinates from shapefile: {e}")
+    
+    return None
+
+
+def get_aws_coordinates_fallback(glacier_id):
+    """Get fallback AWS coordinates for different glaciers."""
+    fallback_coords = {
+        'athabasca': (52.1938, -117.2502),    # Athabasca AWS coordinates
+        'haig': (50.7124, -115.3018),         # Haig AWS coordinates from HaigAWS_daily_2002_2015_gapfilled.csv
+        'coropuna': (-15.536111, -72.59972),  # Coropuna AWS coordinates from aws_station_point.shp
+    }
+    return fallback_coords.get(glacier_id)
 
 
 def calculate_scatter_plot_statistics(data, selected_methods=None):
@@ -96,8 +152,45 @@ def calculate_scatter_plot_statistics(data, selected_methods=None):
 app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.BOOTSTRAP],
+    external_scripts=[
+        "https://unpkg.com/three@0.159.0/build/three.min.js",
+    ],
     suppress_callback_exceptions=True,
-    title="Interactive Albedo Analysis Dashboard"
+    title="Interactive Albedo Analysis Dashboard",
+    assets_folder="dashboard/assets",
+)
+
+# Inject Tailwind and Three.js background
+app.index_string = (
+    """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            {%metas%}
+            <title>{%title%}</title>
+            {%favicon%}
+            {%css%}
+            <script>
+              window.tailwind = {
+                config: {
+                  prefix: 'tw-',
+                  corePlugins: { preflight: false }
+                }
+              }
+            </script>
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="tw-bg-slate-50">
+            {%app_entry%}
+            <footer>
+                {%config%}
+                {%scripts%}
+                <script defer src="/assets/three-bg.js"></script>
+                {%renderer%}
+            </footer>
+        </body>
+    </html>
+    """
 )
 
 # Initialize core components
@@ -191,23 +284,18 @@ def create_layout():
                             dbc.Button("Update Plots", id="update-plots-btn", color="success", size="sm", className="mb-2"),
                             dbc.Switch(id='aws-toggle', label='Include AWS data', value=True),
                             html.Hr(),
-                            html.Label("Data Selection Mode:", className="form-label"),
+                            html.Label("Pixel Filtering:", className="form-label"),
                             dbc.Tooltip(
-                                "Base dataset mode: All (use full dataset, filter by selection if any), Selected (require pixel selection), Best (highest quality data, filter by selection if any)",
+                                "Use custom filters to select pixels based on distance, glacier fraction, and quality criteria",
                                 target="data-mode-radio",
                                 placement="top"
                             ),
                             dcc.RadioItems(
                                 id='data-mode-radio',
                                 options=[
-                                    {'label': 'All pixels', 'value': 'all'},
-                                    {'label': 'Selected pixels only', 'value': 'selected'},
-                                    {'label': 'Best quality pixels', 'value': 'best'},
-                                    {'label': 'Closest to AWS', 'value': 'closest_aws'},
-                                    {'label': 'High glacier fraction', 'value': 'high_glacier_fraction'},
                                     {'label': 'Custom filters', 'value': 'custom'}
                                 ],
-                                value='all',
+                                value='custom',
                                 inline=False,
                                 className='mb-2'
                             ),
@@ -222,7 +310,7 @@ def create_layout():
                                     dbc.Switch(
                                         id='distance-filter-toggle',
                                         label='Distance Filter',
-                                        value=False,
+                                        value=True,  # Enable by default
                                         className='mb-2'
                                     ),
                                     html.Div([
@@ -237,13 +325,13 @@ def create_layout():
                                         dcc.Input(
                                             id='max-distance-input',
                                             type='number',
-                                            placeholder='e.g., 10.0',
-                                            value=10.0,
+                                            placeholder='e.g., 0.5',
+                                            value=0.5,  # Default to 0.5km
                                             min=0.1, max=50.0, step=0.1,
                                             size='10',
                                             className='form-control form-control-sm mb-2'
                                         )
-                                    ], id='distance-filter-controls', style={'display': 'none'})
+                                    ], id='distance-filter-controls', style={'display': 'block'})  # Show by default
                                 ]),
                                 
                                 # Glacier fraction filtering controls
@@ -646,6 +734,9 @@ def update_tab_content(active_tab, n_clicks, selected_methods, include_aws, data
 
 def get_pixel_marker_style(pixel_id, is_selected, passes_filter, filter_params=None):
     """Determine marker style based on pixel state."""
+    # DEBUG: Log parameters for troubleshooting
+    logger.info(f"Styling pixel {pixel_id}: is_selected={is_selected}, passes_filter={passes_filter}, filter_params={filter_params}")
+    
     # Define marker styles for different states
     styles = {
         'excluded': {
@@ -696,20 +787,117 @@ def get_pixel_marker_style(pixel_id, is_selected, passes_filter, filter_params=N
 def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
     """Determine which pixels pass the current filters."""
     try:
-        if not filter_params or not data_json:
-            return set()
+        if not filter_params:
+            # If no filter params, all pixels pass
+            return set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
             
         from io import StringIO
         import pandas as pd
         
-        # Load full data for filtering calculations
-        data = pd.read_json(StringIO(data_json))
-        
-        # For custom filters mode, apply filtering directly here based on pixel-level data
         data_mode = filter_params.get('data_mode', 'all')
+        logger.info(f"Processing filter mode: {data_mode}")
         
-        if data_mode == 'custom':
-            # Apply glacier fraction filtering if enabled
+        # Handle different data selection modes
+        if data_mode == 'all':
+            # All pixels pass - return all pixel IDs with consistent formatting
+            result_set = set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
+            logger.info(f"All pixels mode: {len(result_set)} pixels pass")
+            return result_set
+            
+        elif data_mode == 'selected':
+            # Only manually selected pixels pass - this will be handled by is_selected logic
+            # Return empty set since selection is handled separately
+            return set()
+            
+        elif data_mode in ['best', 'closest_aws', 'high_glacier_fraction']:
+            # These modes require data filtering
+            if not data_json:
+                logger.warning(f"No data available for {data_mode} filtering")
+                return set()
+                
+            # Load full data for filtering calculations
+            data = pd.read_json(StringIO(data_json))
+            logger.info(f"Loaded data for filtering: {len(data)} records")
+            
+            # Get glacier info for enhanced filtering
+            glacier_info = data_manager.glacier_config.get('glaciers', {}).get(glacier_id, {})
+            
+            # Apply filtering based on mode
+            filtered_data = _filter_data_by_mode_enhanced(data, data_mode, [], glacier_info, filter_params)
+            logger.info(f"Filtered data: {len(filtered_data)} records")
+            
+            # For 'best' and 'closest_aws' modes, select only the single best pixel
+            if data_mode == 'best' and len(filtered_data) > 0:
+                # Select the pixel with the best QA score (lowest value)
+                if 'qa_score' in filtered_data.columns:
+                    pixel_scores = filtered_data.groupby('pixel_id')['qa_score'].min()
+                    best_pixel_id = pixel_scores.idxmin()
+                    result_set = {str(int(best_pixel_id))}
+                    logger.info(f"best mode: selected single best pixel {best_pixel_id} with QA score {pixel_scores.min()}")
+                else:
+                    # Fallback: select first pixel
+                    best_pixel_id = filtered_data['pixel_id'].iloc[0]
+                    result_set = {str(int(best_pixel_id))}
+                    logger.info(f"best mode: fallback selected pixel {best_pixel_id}")
+                return result_set
+                
+            elif data_mode == 'closest_aws' and len(filtered_data) > 0:
+                # Calculate distances and select the single closest pixel
+                try:
+                    # Try to get AWS coordinates from shapefile first
+                    aws_coords_from_shp = get_aws_coordinates_from_shapefile(glacier_id)
+                    if aws_coords_from_shp:
+                        aws_lat, aws_lon = aws_coords_from_shp
+                        logger.info(f"Using AWS coordinates from shapefile for filtering: lat={aws_lat}, lon={aws_lon}")
+                    else:
+                        # Use glacier-specific fallback coordinates
+                        fallback_coords = get_aws_coordinates_fallback(glacier_id)
+                        if fallback_coords:
+                            aws_lat, aws_lon = fallback_coords
+                            logger.info(f"Using fallback AWS coordinates for {glacier_id}: lat={aws_lat}, lon={aws_lon}")
+                        else:
+                            aws_lat, aws_lon = 52.1938, -117.2502  # Default to Athabasca as last resort
+                            logger.warning(f"No AWS coordinates found for {glacier_id}, using Athabasca fallback: lat={aws_lat}, lon={aws_lon}")
+                    
+                    unique_pixels = filtered_data[['pixel_id', 'latitude', 'longitude']].drop_duplicates('pixel_id')
+                    
+                    min_distance = float('inf')
+                    closest_pixel_id = None
+                    
+                    for _, pixel in unique_pixels.iterrows():
+                        dist = ((pixel['latitude'] - aws_lat)**2 + (pixel['longitude'] - aws_lon)**2)**0.5
+                        if dist < min_distance:
+                            min_distance = dist
+                            closest_pixel_id = pixel['pixel_id']
+                    
+                    if closest_pixel_id is not None:
+                        result_set = {str(int(closest_pixel_id))}
+                        logger.info(f"closest_aws mode: selected single closest pixel {closest_pixel_id} (distance: {min_distance:.4f})")
+                        return result_set
+                except Exception as e:
+                    logger.error(f"Error calculating closest pixel: {e}")
+                    # Fallback: select first pixel
+                    first_pixel_id = filtered_data['pixel_id'].iloc[0]
+                    result_set = {str(int(first_pixel_id))}
+                    logger.info(f"closest_aws mode: fallback selected pixel {first_pixel_id}")
+                    return result_set
+            
+            # For other modes (high_glacier_fraction), return all pixels that pass filters
+            if 'pixel_id' in filtered_data.columns and len(filtered_data) > 0:
+                result_set = set(str(int(pid)) for pid in filtered_data['pixel_id'].unique())
+                logger.info(f"{data_mode} mode: {len(result_set)} pixels pass filters")
+                return result_set
+            else:
+                logger.warning(f"No pixels pass {data_mode} filters")
+                return set()
+        
+        elif data_mode == 'custom':
+            # Apply custom filtering based on specific parameters
+            # Start with all pixels
+            unique_pixels = pixel_data[['pixel_id', 'latitude', 'longitude', 'glacier_fraction']].drop_duplicates('pixel_id')
+            result_set = set(str(int(pid)) for pid in unique_pixels['pixel_id'].unique())
+            
+            # Apply glacier fraction filter if enabled
             if filter_params.get('use_glacier_fraction', False):
                 min_fraction = filter_params.get('min_glacier_fraction', 0.7)
                 
@@ -718,41 +906,159 @@ def determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params):
                     logger.error(f"glacier_fraction column not found in pixel_data. Available columns: {list(pixel_data.columns)}")
                     return set()
                     
-                unique_pixels = pixel_data[['pixel_id', 'glacier_fraction']].drop_duplicates()
-                logger.info(f"Unique pixels shape: {unique_pixels.shape}")
-                logger.info(f"Glacier fraction values: {unique_pixels['glacier_fraction'].unique()[:5]}...")
+                logger.info(f"Unique pixels for glacier fraction filter: {len(unique_pixels)}")
                 
                 # Filter pixels that pass the glacier fraction threshold
                 passing_pixels = unique_pixels[unique_pixels['glacier_fraction'] >= min_fraction]
                 
                 logger.info(f"Glacier fraction filter: {len(passing_pixels)} out of {len(unique_pixels)} pixels pass (>= {min_fraction})")
-                result_set = set(str(pid) for pid in passing_pixels['pixel_id'].unique())
-                logger.info(f"Returning pixel IDs: {result_set}")
-                return result_set
+                result_set = set(str(int(pid)) for pid in passing_pixels['pixel_id'].unique())
+                unique_pixels = passing_pixels  # Update for next filter
             
-            # If no specific filters are enabled, return all pixels
-            return set(str(pid) for pid in pixel_data['pixel_id'].unique())
-        
-        elif data_mode in ['high_glacier_fraction', 'closest_aws']:
-            # For other special modes, use the enhanced filtering
-            glacier_info = data_manager.glacier_config.get('glaciers', {}).get(glacier_id, {})
-            filtered_data = _filter_data_by_mode_enhanced(data, data_mode, [], glacier_info, filter_params)
+            # Apply distance filter if enabled
+            if filter_params.get('use_distance_filter', False):
+                max_distance_km = filter_params.get('max_distance_km', 10.0)
+                top_n_closest = filter_params.get('top_n_closest', 5)
+                
+                # Get AWS coordinates
+                try:
+                    # Try to get AWS coordinates from shapefile first
+                    aws_coords_from_shp = get_aws_coordinates_from_shapefile(glacier_id)
+                    if aws_coords_from_shp:
+                        aws_lat, aws_lon = aws_coords_from_shp
+                        logger.info(f"Using AWS coordinates from shapefile for distance filtering: lat={aws_lat}, lon={aws_lon}")
+                    else:
+                        # Use glacier-specific fallback coordinates
+                        fallback_coords = get_aws_coordinates_fallback(glacier_id)
+                        if fallback_coords:
+                            aws_lat, aws_lon = fallback_coords
+                            logger.info(f"Using fallback AWS coordinates for {glacier_id} distance filtering: lat={aws_lat}, lon={aws_lon}")
+                        else:
+                            aws_lat, aws_lon = 52.1938, -117.2502  # Default to Athabasca as last resort
+                            logger.warning(f"No AWS coordinates found for {glacier_id}, using Athabasca fallback for distance filtering: lat={aws_lat}, lon={aws_lon}")
+                    
+                    # Calculate distances for remaining pixels
+                    pixels_with_distance = []
+                    for _, pixel in unique_pixels.iterrows():
+                        # Calculate distance in km using Haversine formula approximation
+                        lat_diff = pixel['latitude'] - aws_lat
+                        lon_diff = pixel['longitude'] - aws_lon
+                        # Simple distance approximation (for small distances)
+                        distance_km = ((lat_diff ** 2 + lon_diff ** 2) ** 0.5) * 111.0  # roughly 111 km per degree
+                        pixels_with_distance.append({
+                            'pixel_id': pixel['pixel_id'],
+                            'distance_km': distance_km
+                        })
+                    
+                    # Sort by distance and apply filters
+                    pixels_with_distance.sort(key=lambda x: x['distance_km'])
+                    
+                    # Apply distance threshold filter first
+                    within_distance = [p for p in pixels_with_distance if p['distance_km'] <= max_distance_km]
+                    logger.info(f"Pixels within {max_distance_km}km distance: {len(within_distance)}/{len(pixels_with_distance)}")
+                    
+                    # Apply top N filter only if it would be more restrictive than distance filter
+                    # Otherwise, use all pixels within the distance threshold
+                    if top_n_closest > 0 and len(within_distance) > top_n_closest:
+                        # Only limit to top N if we have more pixels than requested
+                        final_pixels = within_distance[:top_n_closest]
+                        logger.info(f"Distance filter: Using top {top_n_closest} closest pixels out of {len(within_distance)} within {max_distance_km}km")
+                    else:
+                        # Use all pixels within distance threshold
+                        final_pixels = within_distance
+                        logger.info(f"Distance filter: Using all {len(within_distance)} pixels within {max_distance_km}km")
+                    
+                    result_set = set(str(int(p['pixel_id'])) for p in final_pixels)
+                    
+                    if len(result_set) == 0:
+                        logger.warning(f"No pixels within {max_distance_km}km of AWS station")
+                    
+                except Exception as e:
+                    logger.error(f"Error applying distance filter: {e}")
+                    # Keep current result set as fallback
             
-            # Return set of pixel IDs that pass filters
-            if 'pixel_id' in filtered_data.columns:
-                return set(str(pid) for pid in filtered_data['pixel_id'].unique())
+            # Check if any filters were applied
+            any_filters_applied = (filter_params.get('use_glacier_fraction', False) or 
+                                 filter_params.get('use_distance_filter', False))
+            
+            if not any_filters_applied:
+                logger.info(f"Custom mode (no filters): {len(result_set)} pixels pass")
             else:
-                return set()
+                logger.info(f"Custom mode (with filters): {len(result_set)} pixels pass")
+            
+            return result_set
         
         else:
-            # For 'all', 'selected', 'best' modes, no filtering applied
-            return set(str(pid) for pid in pixel_data['pixel_id'].unique())
+            # Unknown mode - return all pixels as fallback
+            logger.warning(f"Unknown data mode: {data_mode}, returning all pixels")
+            return set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
             
     except Exception as e:
         logger.error(f"Error determining filtered pixels: {e}")
         import traceback
         traceback.print_exc()
-        return set()
+        # Return all pixels as fallback to avoid breaking the UI
+        try:
+            return set(str(int(pid)) for pid in pixel_data['pixel_id'].unique())
+        except Exception as fallback_error:
+            logger.error(f"Fallback also failed: {fallback_error}")
+            return set()
+
+def get_glacier_mask_path(glacier_id):
+    """Get the path to the glacier mask shapefile for the given glacier."""
+    mask_paths = {
+        'athabasca': 'data/glacier_masks/athabasca/masque_athabasa_zone_ablation.shp',
+        'haig': 'data/glacier_masks/haig/Haig_glacier_final.shp',
+        'coropuna': 'data/glacier_masks/coropuna/coropuna_mask.shp'
+    }
+    return mask_paths.get(glacier_id)
+
+
+def add_glacier_mask_layer(glacier_id):
+    """Add glacier mask as a GeoJSON layer to the map."""
+    try:
+        import geopandas as gpd
+        import json
+        
+        mask_path = get_glacier_mask_path(glacier_id)
+        if not mask_path or not os.path.exists(mask_path):
+            logger.warning(f"Glacier mask shapefile not found for {glacier_id}: {mask_path}")
+            return None
+        
+        # Read the shapefile and convert to GeoJSON
+        gdf = gpd.read_file(mask_path)
+        if gdf.empty:
+            logger.warning(f"Empty glacier mask shapefile for {glacier_id}")
+            return None
+        
+        # Convert to GeoJSON format
+        geojson_data = json.loads(gdf.to_json())
+        
+        # Create glacier mask layer with styling
+        glacier_layer = dl.GeoJSON(
+            data=geojson_data,
+            id=f"glacier-mask-{glacier_id}",
+            options={
+                'style': {
+                    'fillColor': '#87CEEB',  # Sky blue
+                    'color': '#4682B4',      # Steel blue border
+                    'weight': 2,
+                    'opacity': 0.8,
+                    'fillOpacity': 0.3
+                }
+            },
+            children=[
+                dl.Tooltip(f"{glacier_id.title()} Glacier Boundary")
+            ]
+        )
+        
+        logger.info(f"✅ Successfully created glacier mask layer for {glacier_id}")
+        return glacier_layer
+        
+    except Exception as e:
+        logger.error(f"❌ Error creating glacier mask layer for {glacier_id}: {e}")
+        return None
+
 
 def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, filter_params=None):
     """Create the map content for the map tab with enhanced filtering visualization."""
@@ -768,6 +1074,7 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
         # Determine which pixels pass current filters
         filtered_pixel_ids = determine_filtered_pixels(pixel_data, data_json, glacier_id, filter_params)
         logger.info(f"Filtered pixel IDs: {filtered_pixel_ids} (count: {len(filtered_pixel_ids)})")
+        logger.info(f"All pixel IDs in data: {set(str(p) for p in pixel_data['pixel_id'].unique())}")
         
         # Calculate map center from actual pixel data (more accurate than config)
         if not pixel_data.empty and 'latitude' in pixel_data.columns and 'longitude' in pixel_data.columns:
@@ -785,12 +1092,30 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
         # Create map elements
         map_children = [dl.TileLayer()]
         
+        # Add glacier mask layer
+        glacier_mask_layer = add_glacier_mask_layer(glacier_id)
+        if glacier_mask_layer:
+            map_children.append(glacier_mask_layer)
+            logger.info(f"Added glacier mask layer for {glacier_id}")
+        
         # Add enhanced pixel markers with filtering visualization
         if not pixel_data.empty and 'latitude' in pixel_data.columns and 'longitude' in pixel_data.columns:
+            # Normalize selected pixels for consistent comparison
+            normalized_selected = []
+            for pid in (selected_pixels or []):
+                normalized_pid = str(int(float(pid))) if pid else str(pid)
+                normalized_selected.append(normalized_pid)
+            
             for _, pixel in pixel_data.iterrows():
-                pixel_id = str(pixel['pixel_id'])
-                is_selected = pixel_id in selected_pixels
+                # Normalize pixel ID consistently with filtering function
+                raw_pixel_id = pixel['pixel_id']
+                pixel_id = str(int(raw_pixel_id))  # Convert to int first, then string to avoid .0
+                
+                is_selected = pixel_id in normalized_selected
                 passes_filter = pixel_id in filtered_pixel_ids
+                
+                # DEBUG: Log filter determination
+                logger.info(f"Pixel {pixel_id}: in selected_pixels={is_selected}, in filtered_pixel_ids={passes_filter}")
                 
                 # Get enhanced marker style
                 style = get_pixel_marker_style(pixel_id, is_selected, passes_filter, filter_params)
@@ -824,10 +1149,15 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
                     )
                 ]
                 
-                # Use CircleMarker for dynamic color styling
+                # Use CircleMarker with dynamic ID for color changes (dash-leaflet requirement)
+                # Include filter state and timestamp in ID to force re-render when colors change
+                filter_state = f"{passes_filter}_{style['color']}"
+                import time
+                timestamp = int(time.time() * 1000) % 10000  # Short timestamp to avoid long IDs
+                
                 marker = dl.CircleMarker(
                     center=[pixel['latitude'], pixel['longitude']],
-                    id={'type': 'pixel-marker', 'pixel_id': pixel_id},
+                    id={'type': 'pixel-marker', 'pixel_id': pixel_id, 'filter_state': filter_state, 'ts': timestamp},
                     children=[
                         dl.Tooltip(tooltip_text),
                         dl.Popup(html.Div(popup_content))
@@ -841,26 +1171,85 @@ def create_map_content(pixel_json, glacier_id, selected_pixels, data_json=None, 
                 )
                 map_children.append(marker)
         
-        # Add AWS station marker
+        # Add AWS station marker with enhanced logging
         try:
-            aws_info = data_manager.get_aws_station_info(glacier_id)
-            if aws_info:
+            logger.info(f"Attempting to get AWS station info for glacier: {glacier_id}")
+            
+            # Try to get AWS coordinates from shapefile first
+            aws_coords_from_shp = get_aws_coordinates_from_shapefile(glacier_id)
+            if aws_coords_from_shp:
+                aws_lat, aws_lon = aws_coords_from_shp
+                aws_name = f"{glacier_id.title()} Glacier AWS (from shapefile)"
+                # Set elevation based on glacier
+                elevation_map = {'athabasca': 2200, 'haig': 2665, 'coropuna': 5080}
+                aws_elevation = elevation_map.get(glacier_id, 'Unknown')
+                logger.info(f"Using AWS coordinates from shapefile: lat={aws_lat}, lon={aws_lon}")
+            else:
+                # Try configuration file first
+                aws_info = data_manager.get_aws_station_info(glacier_id)
+                logger.info(f"AWS info for {glacier_id}: {aws_info}")
+                
+                if aws_info:
+                    aws_lat = float(aws_info['lat'])
+                    aws_lon = float(aws_info['lon'])
+                    aws_name = aws_info.get('name', 'AWS Station')
+                    aws_elevation = aws_info.get('elevation', 'Unknown')
+                else:
+                    # Use glacier-specific fallback coordinates
+                    fallback_coords = get_aws_coordinates_fallback(glacier_id)
+                    if fallback_coords:
+                        aws_lat, aws_lon = fallback_coords
+                        aws_name = f"{glacier_id.title()} Glacier AWS (fallback)"
+                        # Set elevation based on glacier
+                        elevation_map = {'athabasca': 2200, 'haig': 2665, 'coropuna': 5080}
+                        aws_elevation = elevation_map.get(glacier_id, 'Unknown')
+                        logger.info(f"Using fallback AWS coordinates for {glacier_id}: lat={aws_lat}, lon={aws_lon}")
+                    else:
+                        aws_lat = aws_lon = aws_name = aws_elevation = None
+                        logger.warning(f"No AWS coordinates available for {glacier_id}")
+                
+            
+            if aws_lat is not None and aws_lon is not None:
+                logger.info(f"Creating AWS marker at lat={aws_lat}, lon={aws_lon}, name={aws_name}")
+                
+                # Create enhanced tooltip with more information
+                tooltip_content = f"🌡️ {aws_name}\nElevation: {aws_elevation}m\nCoords: {aws_lat:.4f}, {aws_lon:.4f}"
+                
+                # Create popup with detailed information
+                popup_content = html.Div([
+                    html.H6(aws_name, className="mb-2"),
+                    html.P([
+                        html.Strong("Type: "), "Automatic Weather Station", html.Br(),
+                        html.Strong("Elevation: "), f"{aws_elevation} m", html.Br(),
+                        html.Strong("Coordinates: "), f"{aws_lat:.4f}, {aws_lon:.4f}", html.Br(),
+                        html.Strong("Source: "), "Shapefile" if aws_coords_from_shp else "Configuration"
+                    ], className="small mb-0")
+                ])
+                
                 aws_marker = dl.Marker(
-                    position=[aws_info['lat'], aws_info['lon']],
+                    position=[aws_lat, aws_lon],
                     id="aws-station-marker",
-                    children=[dl.Tooltip(f"AWS Station: {aws_info.get('name', 'Station')}")],
+                    children=[
+                        dl.Tooltip(tooltip_content),
+                        dl.Popup(popup_content, closeButton=True)
+                    ],
                     icon={
                         'iconUrl': 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
                         'shadowUrl': 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                        'iconSize': [15, 15],
-                        'iconAnchor': [7, 15],
-                        'popupAnchor': [1, -15],
-                        'shadowSize': [15, 15]
+                        'iconSize': [25, 41],  # Larger size for better visibility
+                        'iconAnchor': [12, 41],
+                        'popupAnchor': [1, -34],
+                        'shadowSize': [41, 41]
                     }
                 )
                 map_children.append(aws_marker)
+                logger.info(f"✅ Successfully added AWS marker for {glacier_id} at position [{aws_lat}, {aws_lon}]")
+            else:
+                logger.warning(f"❌ No AWS station info found for {glacier_id}")
         except Exception as e:
-            logger.warning(f"Could not add AWS marker: {e}")
+            logger.error(f"❌ Could not add AWS marker: {e}")
+            import traceback
+            traceback.print_exc()
         
         # Create the map
         map_component = dl.Map(
@@ -1199,87 +1588,39 @@ def _filter_data_by_mode_enhanced(data: pd.DataFrame, data_mode: str, selected_p
         return data
 
 
-# Callback for pixel selection from popup buttons
+ # Callback for pixel selection from popup buttons (more robust parsing)
 @app.callback(
     [Output('selected-pixels-store', 'data'),
      Output('selection-info', 'children')],
     [Input({'type': 'pixel-toggle-btn', 'pixel_id': dash.dependencies.ALL}, 'n_clicks')],
-    [State('selected-pixels-store', 'data'),
-     State('pixel-data-store', 'data')],
+    [State('selected-pixels-store', 'data')],
     prevent_initial_call=True
 )
-def handle_pixel_selection(n_clicks_list, current_selected, pixel_json):
-    """Handle pixel selection from popup buttons."""
-    if not pixel_json:
-        return current_selected or [], [html.P("No pixel data available", className="text-muted")]
-    
+def handle_pixel_selection(n_clicks_list, current_selected):
+    """Toggle selection when a popup button is clicked."""
+    current_selected = current_selected or []
     try:
-        current_selected = current_selected or []
-        
-        # Check if any button was clicked
-        if n_clicks_list and any(n_clicks_list):
-            # Get the triggered component
-            if ctx.triggered:
-                triggered_id = ctx.triggered[0]['prop_id']
-                logger.info(f"Button triggered: {triggered_id}")
-                
-                # Extract pixel_id from triggered component
-                if 'pixel_id' in triggered_id:
-                    try:
-                        # The triggered_id looks like: {"pixel_id":"9073025950.0","type":"pixel-toggle-btn"}.n_clicks
-                        # Let's use a more direct regex approach since JSON parsing is problematic
-                        import re
-                        pixel_id_match = re.search(r'"pixel_id":"([^"]+)"', triggered_id)
-                        
-                        if pixel_id_match:
-                            pixel_id = pixel_id_match.group(1)
-                            # Normalize pixel ID format: remove .0 if present
-                            if pixel_id.endswith('.0'):
-                                pixel_id = pixel_id[:-2]
-                            logger.info(f"Extracted and normalized pixel_id: {pixel_id}")
-                            
-                            # Toggle pixel selection
-                            if pixel_id in current_selected:
-                                current_selected.remove(pixel_id)
-                                logger.info(f"Removed pixel {pixel_id}")
-                            else:
-                                current_selected.append(pixel_id)
-                                logger.info(f"Added pixel {pixel_id}")
-                        else:
-                            logger.error(f"Could not extract pixel_id from: {triggered_id}")
-                            
-                    except Exception as parse_error:
-                        logger.error(f"Error parsing button ID: {parse_error}")
-                        # Final fallback - try to extract any numeric value that looks like a pixel ID
-                        import re
-                        numbers = re.findall(r'\d+\.?\d*', triggered_id)
-                        if numbers:
-                            pixel_id = numbers[0]  # Take the first number found
-                            # Normalize pixel ID format: remove .0 if present
-                            if pixel_id.endswith('.0'):
-                                pixel_id = pixel_id[:-2]
-                            logger.info(f"Fallback extracted and normalized pixel_id: {pixel_id}")
-                            if pixel_id in current_selected:
-                                current_selected.remove(pixel_id)
-                            else:
-                                current_selected.append(pixel_id)
-        
-        # Update selection info
-        if current_selected:
-            selection_info = [
-                html.H6(f"Selected Pixels ({len(current_selected)}):"),
-                html.Ul([html.Li(f"Pixel {pid}") for pid in current_selected])
-            ]
-        else:
-            selection_info = [html.P("Click on pixel markers and use popup buttons to select", className="text-muted")]
-        
-        return current_selected, selection_info
-        
-    except Exception as e:
-        logger.error(f"Error handling pixel selection: {e}")
-        import traceback
-        traceback.print_exc()
-        return current_selected or [], [html.P("Error handling selection", className="text-danger")]
+        if n_clicks_list and any(n_clicks_list) and ctx.triggered:
+            trig = ctx.triggered[0]['prop_id']
+            import re
+            m = re.search(r'\{"type":"pixel-toggle-btn","pixel_id":"([^\"]+)"\}\.n_clicks', trig)
+            if m:
+                pid = m.group(1)
+                if pid.endswith('.0'):
+                    pid = pid[:-2]
+                if pid in current_selected:
+                    current_selected.remove(pid)
+                else:
+                    current_selected.append(pid)
+
+        info = [
+            html.H6(f"Selected Pixels ({len(current_selected)}):"),
+            html.Ul([html.Li(f"Pixel {pid}") for pid in current_selected])
+        ] if current_selected else [html.P("Click on pixel markers and use popup buttons to select", className="text-muted")]
+
+        return current_selected, info
+    except Exception:
+        return current_selected, [html.P("Selection error", className="text-danger")]
 
 # Callback for clearing selection
 @app.callback(
@@ -1343,7 +1684,7 @@ def update_content_on_selection(selected_pixels, selected_methods, include_aws, 
             
             # Show message if no data after filtering
             if data.empty:
-                return dbc.Alert(f"No data available for current selection mode", color="warning")
+                return dbc.Alert("No data available for current selection mode", color="warning")
             
             # Filter by methods
             if selected_methods and 'method' in data.columns:
@@ -1615,11 +1956,8 @@ def export_plot(n_clicks, active_tab, glacier_id):
     Input('data-mode-radio', 'value')
 )
 def toggle_advanced_filters(data_mode):
-    """Show advanced filters only when custom mode is selected."""
-    if data_mode == 'custom':
-        return {'display': 'block'}
-    else:
-        return {'display': 'none'}
+    """Always show advanced filters since we only have custom mode."""
+    return {'display': 'block'}
 
 
 # Callback to show/hide distance filter controls
@@ -1629,6 +1967,10 @@ def toggle_advanced_filters(data_mode):
 )
 def toggle_distance_controls(is_enabled):
     """Show distance filter controls when toggle is enabled."""
+    if is_enabled:
+        return {'display': 'block'}
+    else:
+        return {'display': 'none'}
     if is_enabled:
         return {'display': 'block'}
     else:

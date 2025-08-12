@@ -42,8 +42,12 @@ logger = logging.getLogger(__name__)
 app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.BOOTSTRAP],
+    external_scripts=[
+        "https://unpkg.com/three@0.159.0/build/three.min.js",
+    ],
     suppress_callback_exceptions=True,
-    title="Interactive Albedo Analysis Dashboard"
+    title="Interactive Albedo Analysis Dashboard",
+    assets_folder="dashboard/assets",
 )
 
 # Initialize core components
@@ -58,6 +62,39 @@ try:
 except Exception as e:
     logger.error(f"Error initializing dashboard components: {e}")
     traceback.print_exc()
+
+# Inject simple Tailwind init and Three.js background after page load
+app.index_string = (
+    """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            {%metas%}
+            <title>{%title%}</title>
+            {%favicon%}
+            {%css%}
+            <script>
+              window.tailwind = {
+                config: {
+                  prefix: 'tw-',
+                  corePlugins: { preflight: false }
+                }
+              }
+            </script>
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="tw-bg-slate-50">
+            {%app_entry%}
+            <footer>
+                {%config%}
+                {%scripts%}
+                <script defer src="/assets/three-bg.js"></script>
+                {%renderer%}
+            </footer>
+        </body>
+    </html>
+    """
+)
 
 # Set app layout
 try:
@@ -289,7 +326,13 @@ def update_plots(n_clicks, glacier_data_json, selected_methods, selected_pixels,
         
         # Filter by pixel selection mode
         if pixel_mode == 'selected' and selected_pixels:
-            filtered_data = filtered_data[filtered_data['pixel_id'].isin(selected_pixels)]
+            # Convert selected pixels to integers for consistent matching
+            try:
+                selected_pixel_ints = [int(pid) for pid in selected_pixels]
+                filtered_data = filtered_data[filtered_data['pixel_id'].isin(selected_pixel_ints)]
+            except (ValueError, TypeError):
+                # Fallback to string comparison if int conversion fails
+                filtered_data = filtered_data[filtered_data['pixel_id'].astype(str).isin(selected_pixels)]
         elif pixel_mode == 'best':
             # Select best pixels automatically (placeholder logic)
             if 'glacier_fraction' in filtered_data.columns:
@@ -340,61 +383,34 @@ def update_plots(n_clicks, glacier_data_json, selected_methods, selected_pixels,
     prevent_initial_call=True
 )
 def handle_map_click(click_lat_lng, current_selected, pixel_data_json):
-    """Handle map clicks for pixel selection."""
+    """Do not toggle selection on map click to avoid double-toggles. Only refresh details table."""
     try:
-        if not click_lat_lng or not pixel_data_json:
-            return current_selected or [], len(current_selected or []), "No pixels selected"
-        
-        # Load pixel data
-        pixel_data = pd.read_json(pixel_data_json)
-        
-        # Find closest pixel to click location
-        click_lat, click_lon = click_lat_lng
-        
-        # Calculate distances to all pixels
-        if 'latitude' in pixel_data.columns and 'longitude' in pixel_data.columns:
-            distances = np.sqrt(
-                (pixel_data['latitude'] - click_lat)**2 + 
-                (pixel_data['longitude'] - click_lon)**2
-            )
-            
-            # Find closest pixel
-            closest_idx = distances.idxmin()
-            closest_pixel = pixel_data.loc[closest_idx]
-            pixel_id = str(closest_pixel['pixel_id'])
-            
-            # Update selection
-            selected_pixels = current_selected or []
-            
-            if pixel_id in selected_pixels:
-                # Remove if already selected
-                selected_pixels.remove(pixel_id)
-            else:
-                # Add to selection
-                selected_pixels.append(pixel_id)
-            
-            # Create selection info
-            if selected_pixels:
-                selected_info = []
-                for pid in selected_pixels:
-                    pixel_info = pixel_data[pixel_data['pixel_id'] == int(pid)]
-                    if not pixel_info.empty:
-                        pixel_row = pixel_info.iloc[0]
-                        selected_info.append(
-                            html.P(f"Pixel {pid}: {pixel_row['latitude']:.4f}, {pixel_row['longitude']:.4f}",
-                                  className='mb-1')
-                        )
-                selection_content = selected_info
-            else:
-                selection_content = [html.P("No pixels selected", className='text-muted')]
-            
-            return selected_pixels, len(selected_pixels), selection_content
-        
-        return current_selected or [], len(current_selected or []), "Error processing selection"
-        
+        selected_pixels = current_selected or []
+        if not pixel_data_json or not selected_pixels:
+            return selected_pixels, len(selected_pixels), [html.P("No pixels selected", className='text-muted')]
+
+        # Build details table from current selection
+        from io import StringIO
+        df = pd.read_json(StringIO(pixel_data_json))
+        header = html.Tr([html.Th("Pixel ID"), html.Th("Glacier Fraction"), html.Th("Elevation (m)")])
+        rows = []
+        for pid in selected_pixels:
+            try:
+                pid_int = int(pid)
+                info = df[df['pixel_id'] == pid_int]
+            except (ValueError, TypeError):
+                info = df[df['pixel_id'].astype(str) == str(pid)]
+            if not info.empty:
+                r = info.iloc[0]
+                gf = (f"{float(r['glacier_fraction']):.3f}" if 'glacier_fraction' in r and pd.notna(r['glacier_fraction']) else "—")
+                elev = (f"{int(r['elevation'])}" if 'elevation' in r and pd.notna(r['elevation']) else "—")
+                rows.append(html.Tr([html.Td(str(int(r['pixel_id']))), html.Td(gf), html.Td(elev)]))
+        selection_content = [html.Table([header] + rows, className='table table-sm')] if rows else [html.P("No pixels selected", className='text-muted')]
+        return selected_pixels, len(selected_pixels), selection_content
+
     except Exception as e:
         logger.error(f"Error handling map click: {e}")
-        return current_selected or [], len(current_selected or []), f"Error: {str(e)}"
+        return current_selected or [], len(current_selected or []), [html.P(f"Error: {str(e)}", className='text-danger')]
 
 # Callback for reset selection
 @app.callback(
@@ -407,6 +423,69 @@ def reset_selection(n_clicks):
     if n_clicks:
         return []
     return dash.no_update
+
+# Callback for pixel selection from popup buttons (supports map popups)
+@app.callback(
+    [Output('selected-pixels-store', 'data', allow_duplicate=True),
+     Output('selected-pixels-count', 'children', allow_duplicate=True),
+     Output('selection-info-content', 'children', allow_duplicate=True)],
+    [Input({'type': 'pixel-toggle-btn', 'pixel_id': dash.dependencies.ALL}, 'n_clicks')],
+    [State('selected-pixels-store', 'data'),
+     State('pixel-data-store', 'data')],
+    prevent_initial_call=True
+)
+def handle_pixel_selection_from_popup(n_clicks_list, current_selected, pixel_json):
+    """Handle pixel selection toggling via popup button clicks."""
+    current_selected = current_selected or []
+    if not pixel_json:
+        return current_selected, len(current_selected), [html.P("No pixel data available", className='text-muted')]
+
+    try:
+        # Check if any button was clicked
+        if n_clicks_list and any(n_clicks_list):
+            if ctx.triggered:
+                triggered_id = ctx.triggered[0]['prop_id']
+                # Extract pixel_id from the triggered component id string
+                import re
+                pixel_id_match = re.search(r'"pixel_id":"([^\"]+)"', triggered_id)
+                if pixel_id_match:
+                    pixel_id = pixel_id_match.group(1)
+                    if pixel_id.endswith('.0'):
+                        pixel_id = pixel_id[:-2]
+                    # Toggle selection
+                    if pixel_id in current_selected:
+                        current_selected.remove(pixel_id)
+                    else:
+                        current_selected.append(pixel_id)
+
+        # Build selection info table from pixel_json
+        if current_selected and pixel_json:
+            try:
+                from io import StringIO
+                df = pd.read_json(StringIO(pixel_json))
+                header = html.Tr([html.Th("Pixel ID"), html.Th("Glacier Fraction"), html.Th("Elevation (m)")])
+                rows = []
+                for pid in current_selected:
+                    try:
+                        pid_int = int(pid)
+                        info = df[df['pixel_id'] == pid_int]
+                    except (ValueError, TypeError):
+                        info = df[df['pixel_id'].astype(str) == str(pid)]
+                    if not info.empty:
+                        r = info.iloc[0]
+                        gf = (f"{float(r['glacier_fraction']):.3f}" if 'glacier_fraction' in r and pd.notna(r['glacier_fraction']) else "—")
+                        elev = (f"{int(r['elevation'])}" if 'elevation' in r and pd.notna(r['elevation']) else "—")
+                        rows.append(html.Tr([html.Td(str(int(r['pixel_id']))), html.Td(gf), html.Td(elev)]))
+                selection_info = [html.Table([header] + rows, className='table table-sm')]
+            except Exception:
+                selection_info = [html.P(f"Selected Pixels: {', '.join(current_selected)}", className='mb-1')]
+        else:
+            selection_info = [html.P("No pixels selected", className='text-muted')]
+
+        return current_selected, len(current_selected), selection_info
+
+    except Exception as e:
+        return current_selected, len(current_selected), [html.P(f"Error handling selection: {str(e)}", className='text-danger')]
 
 # Callback for clear cache
 @app.callback(
