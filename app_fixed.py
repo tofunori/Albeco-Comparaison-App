@@ -152,8 +152,45 @@ def calculate_scatter_plot_statistics(data, selected_methods=None):
 app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.BOOTSTRAP],
+    external_scripts=[
+        "https://unpkg.com/three@0.159.0/build/three.min.js",
+    ],
     suppress_callback_exceptions=True,
-    title="Interactive Albedo Analysis Dashboard"
+    title="Interactive Albedo Analysis Dashboard",
+    assets_folder="dashboard/assets",
+)
+
+# Inject Tailwind and Three.js background
+app.index_string = (
+    """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            {%metas%}
+            <title>{%title%}</title>
+            {%favicon%}
+            {%css%}
+            <script>
+              window.tailwind = {
+                config: {
+                  prefix: 'tw-',
+                  corePlugins: { preflight: false }
+                }
+              }
+            </script>
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="tw-bg-slate-50">
+            {%app_entry%}
+            <footer>
+                {%config%}
+                {%scripts%}
+                <script defer src="/assets/three-bg.js"></script>
+                {%renderer%}
+            </footer>
+        </body>
+    </html>
+    """
 )
 
 # Initialize core components
@@ -1551,87 +1588,39 @@ def _filter_data_by_mode_enhanced(data: pd.DataFrame, data_mode: str, selected_p
         return data
 
 
-# Callback for pixel selection from popup buttons
+ # Callback for pixel selection from popup buttons (more robust parsing)
 @app.callback(
     [Output('selected-pixels-store', 'data'),
      Output('selection-info', 'children')],
     [Input({'type': 'pixel-toggle-btn', 'pixel_id': dash.dependencies.ALL}, 'n_clicks')],
-    [State('selected-pixels-store', 'data'),
-     State('pixel-data-store', 'data')],
+    [State('selected-pixels-store', 'data')],
     prevent_initial_call=True
 )
-def handle_pixel_selection(n_clicks_list, current_selected, pixel_json):
-    """Handle pixel selection from popup buttons."""
-    if not pixel_json:
-        return current_selected or [], [html.P("No pixel data available", className="text-muted")]
-    
+def handle_pixel_selection(n_clicks_list, current_selected):
+    """Toggle selection when a popup button is clicked."""
+    current_selected = current_selected or []
     try:
-        current_selected = current_selected or []
-        
-        # Check if any button was clicked
-        if n_clicks_list and any(n_clicks_list):
-            # Get the triggered component
-            if ctx.triggered:
-                triggered_id = ctx.triggered[0]['prop_id']
-                logger.info(f"Button triggered: {triggered_id}")
-                
-                # Extract pixel_id from triggered component
-                if 'pixel_id' in triggered_id:
-                    try:
-                        # The triggered_id looks like: {"pixel_id":"9073025950.0","type":"pixel-toggle-btn"}.n_clicks
-                        # Let's use a more direct regex approach since JSON parsing is problematic
-                        import re
-                        pixel_id_match = re.search(r'"pixel_id":"([^"]+)"', triggered_id)
-                        
-                        if pixel_id_match:
-                            pixel_id = pixel_id_match.group(1)
-                            # Normalize pixel ID format: remove .0 if present
-                            if pixel_id.endswith('.0'):
-                                pixel_id = pixel_id[:-2]
-                            logger.info(f"Extracted and normalized pixel_id: {pixel_id}")
-                            
-                            # Toggle pixel selection
-                            if pixel_id in current_selected:
-                                current_selected.remove(pixel_id)
-                                logger.info(f"Removed pixel {pixel_id}")
-                            else:
-                                current_selected.append(pixel_id)
-                                logger.info(f"Added pixel {pixel_id}")
-                        else:
-                            logger.error(f"Could not extract pixel_id from: {triggered_id}")
-                            
-                    except Exception as parse_error:
-                        logger.error(f"Error parsing button ID: {parse_error}")
-                        # Final fallback - try to extract any numeric value that looks like a pixel ID
-                        import re
-                        numbers = re.findall(r'\d+\.?\d*', triggered_id)
-                        if numbers:
-                            pixel_id = numbers[0]  # Take the first number found
-                            # Normalize pixel ID format: remove .0 if present
-                            if pixel_id.endswith('.0'):
-                                pixel_id = pixel_id[:-2]
-                            logger.info(f"Fallback extracted and normalized pixel_id: {pixel_id}")
-                            if pixel_id in current_selected:
-                                current_selected.remove(pixel_id)
-                            else:
-                                current_selected.append(pixel_id)
-        
-        # Update selection info
-        if current_selected:
-            selection_info = [
-                html.H6(f"Selected Pixels ({len(current_selected)}):"),
-                html.Ul([html.Li(f"Pixel {pid}") for pid in current_selected])
-            ]
-        else:
-            selection_info = [html.P("Click on pixel markers and use popup buttons to select", className="text-muted")]
-        
-        return current_selected, selection_info
-        
-    except Exception as e:
-        logger.error(f"Error handling pixel selection: {e}")
-        import traceback
-        traceback.print_exc()
-        return current_selected or [], [html.P("Error handling selection", className="text-danger")]
+        if n_clicks_list and any(n_clicks_list) and ctx.triggered:
+            trig = ctx.triggered[0]['prop_id']
+            import re
+            m = re.search(r'\{"type":"pixel-toggle-btn","pixel_id":"([^\"]+)"\}\.n_clicks', trig)
+            if m:
+                pid = m.group(1)
+                if pid.endswith('.0'):
+                    pid = pid[:-2]
+                if pid in current_selected:
+                    current_selected.remove(pid)
+                else:
+                    current_selected.append(pid)
+
+        info = [
+            html.H6(f"Selected Pixels ({len(current_selected)}):"),
+            html.Ul([html.Li(f"Pixel {pid}") for pid in current_selected])
+        ] if current_selected else [html.P("Click on pixel markers and use popup buttons to select", className="text-muted")]
+
+        return current_selected, info
+    except Exception:
+        return current_selected, [html.P("Selection error", className="text-danger")]
 
 # Callback for clearing selection
 @app.callback(

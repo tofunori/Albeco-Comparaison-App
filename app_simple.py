@@ -36,8 +36,45 @@ logger = logging.getLogger(__name__)
 app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.BOOTSTRAP],
+    external_scripts=[
+        "https://unpkg.com/three@0.159.0/build/three.min.js",
+    ],
     suppress_callback_exceptions=True,
-    title="Interactive Albedo Analysis Dashboard"
+    title="Interactive Albedo Analysis Dashboard",
+    assets_folder="dashboard/assets",
+)
+
+# Inject Tailwind init and Three.js background
+app.index_string = (
+    """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            {%metas%}
+            <title>{%title%}</title>
+            {%favicon%}
+            {%css%}
+            <script>
+              window.tailwind = {
+                config: {
+                  prefix: 'tw-',
+                  corePlugins: { preflight: false }
+                }
+              }
+            </script>
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="tw-bg-slate-50">
+            {%app_entry%}
+            <footer>
+                {%config%}
+                {%scripts%}
+                <script defer src="/assets/three-bg.js"></script>
+                {%renderer%}
+            </footer>
+        </body>
+    </html>
+    """
 )
 
 # Initialize core components

@@ -95,6 +95,10 @@ class DashboardLayout:
             HTML Div containing the main content
         """
         content_area = html.Div([
+            # Three.js background host. The script will attach a canvas to this div.
+            html.Div(id="three-bg", **{"data-three": "bg"}, style={
+                'position': 'fixed', 'inset': '0', 'zIndex': 0, 'pointerEvents': 'none'
+            }),
             # Header with title and status
             self.create_header(),
             
@@ -170,7 +174,7 @@ class DashboardLayout:
                     ]
                 )
             ], id="main-tabs", active_tab="map-tab")
-        ])
+        ], style={'position': 'relative', 'zIndex': 1})
         
         return content_area
     

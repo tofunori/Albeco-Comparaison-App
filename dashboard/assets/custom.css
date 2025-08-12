@@ -6,6 +6,10 @@ body {
     background-color: #f8f9fa;
 }
 
+/* Tailwind in Dash: allow utility classes using tw- prefix to avoid conflicts */
+/* If using CDN initialization with prefix 'tw', these utilities will be available. */
+
+
 /* Sidebar styling */
 .sidebar {
     background-color: #f8f9fa;
